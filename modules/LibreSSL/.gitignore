@@ -1,0 +1,14 @@
+.build
+
+windows_*
+linux_*
+macos_*
+
+.build
+
+LibreSSL-*/build
+
+*.exe
+*.pdb
+
+examples/example
