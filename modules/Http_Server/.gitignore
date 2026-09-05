@@ -1,0 +1,9 @@
+.build
+
+*.exe
+*.pdb
+
+examples/example
+examples/sse
+examples/tls
+examples/ws
