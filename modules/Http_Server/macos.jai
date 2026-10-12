@@ -33,31 +33,31 @@ init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", 
         if error return true;
     }
 
-    server.wakeup_socket = Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
-    if server.wakeup_socket == Socket.INVALID_SOCKET return true;
+    server.wake_up_socket = Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
+    if server.wake_up_socket == Socket.INVALID_SOCKET return true;
 
     addr: Socket.sockaddr_in;
     addr.sin_family = Socket.AF_INET;
     addr.sin_port = 0;
     addr.sin_addr.s_addr = Socket.INADDR_ANY;
 
-    result = Socket.bind(server.wakeup_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
+    result = Socket.bind(server.wake_up_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
     if result != 0 return true;
 
     addr_size: u32 = size_of(type_of(addr));
 
-    Socket.getsockname(server.wakeup_socket, cast(*Socket.sockaddr)*addr, *addr_size);
+    Socket.getsockname(server.wake_up_socket, cast(*Socket.sockaddr)*addr, *addr_size);
 
-    server.wakeup_port = Socket.ntohs(addr.sin_port);
+    server.wake_up_port = Socket.ntohs(addr.sin_port);
 
-    Socket.set_blocking(server.wakeup_socket, false);
+    Socket.set_blocking(server.wake_up_socket, false);
 
-    wakeup_event: Macos.Kevent64;
-    wakeup_event.ident = xx server.wakeup_socket;
-    wakeup_event.filter = .READ;
-    wakeup_event.flags = .ADD | .ENABLE;
+    wake_up_event: Macos.Kevent64;
+    wake_up_event.ident = xx server.wake_up_socket;
+    wake_up_event.filter = .READ;
+    wake_up_event.flags = .ADD | .ENABLE;
 
-    array_add(*server.kqueue_changes, wakeup_event);
+    array_add(*server.kqueue_changes, wake_up_event);
 
     server.tls = tls;
 
@@ -103,9 +103,9 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
     for i: 0..number_of_events - 1 {
         event := kevents[i];
 
-        if event.ident == xx server.wakeup_socket {
+        if event.ident == xx server.wake_up_socket {
             buffer: [64] u8;
-            Socket.recvfrom(server.wakeup_socket, buffer.data, 64, 0, null, null);
+            Socket.recvfrom(server.wake_up_socket, buffer.data, 64, 0, null, null);
             continue;
         }
 
@@ -163,8 +163,8 @@ Http_Server :: struct {
     tls:     bool;
     ssl_ctx: *LibreSSL.SSL_CTX;
 
-    wakeup_socket: Socket.Socket;
-    wakeup_port:   u16;
+    wake_up_socket: Socket.Socket;
+    wake_up_port:   u16;
 }
 
 #scope_module

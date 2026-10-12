@@ -222,10 +222,10 @@ html_escape :: (s: string) -> string {
     return builder_to_string(*b);
 }
 
-wakeup_event_loop :: (server: *Http_Server) {
+wake_up_event_loop :: (server: *Http_Server) {
     addr: Socket.sockaddr_in;
     addr.sin_family = Socket.AF_INET;
-    addr.sin_port = Socket.htons(server.wakeup_port);
+    addr.sin_port = Socket.htons(server.wake_up_port);
 
     #if OS == .WINDOWS {
         addr.sin_addr.S_un.S_addr = Socket.htonl(0x7F000001);
@@ -234,7 +234,7 @@ wakeup_event_loop :: (server: *Http_Server) {
     }
 
     dummy: u8 = 1;
-    Socket.sendto(server.wakeup_socket, cast(*u8)*dummy, 1, 0, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
+    Socket.sendto(server.wake_up_socket, cast(*u8)*dummy, 1, 0, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
 }
 
 send_response :: (server: *Http_Server, response: Http_Response) {

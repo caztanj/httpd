@@ -24,28 +24,28 @@ init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", 
         if error return true;
     }
 
-    server.wakeup_socket = Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
-    if server.wakeup_socket == Socket.INVALID_SOCKET return true;
+    server.wake_up_socket = Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
+    if server.wake_up_socket == Socket.INVALID_SOCKET return true;
 
     addr: Socket.sockaddr_in;
     addr.sin_family = Socket.AF_INET;
     addr.sin_port = 0;
     addr.sin_addr.S_un.S_addr = Socket.inet_addr("127.0.0.1");
 
-    result = Socket.bind(server.wakeup_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
+    result = Socket.bind(server.wake_up_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
     if result != 0 return true;
 
     addr_size: s32 = size_of(type_of(addr));
 
-    Socket.getsockname(server.wakeup_socket, cast(*Socket.sockaddr)*addr, *addr_size);
+    Socket.getsockname(server.wake_up_socket, cast(*Socket.sockaddr)*addr, *addr_size);
 
-    server.wakeup_port = Socket.ntohs(addr.sin_port);
+    server.wake_up_port = Socket.ntohs(addr.sin_port);
 
-    Socket.set_blocking(server.wakeup_socket, false);
+    Socket.set_blocking(server.wake_up_socket, false);
 
-    wsapollfd_wakeup := Socket.WSAPOLLFD.{ fd = server.wakeup_socket, events = Socket.POLLIN };
+    wsapollfd_wake_up := Socket.WSAPOLLFD.{ fd = server.wake_up_socket, events = Socket.POLLIN };
 
-    array_add(*server.wsapollfds, wsapollfd_wakeup);
+    array_add(*server.wsapollfds, wsapollfd_wake_up);
 
     server.tls = tls;
     return false;
@@ -72,10 +72,10 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
     ERROR_EVENTS :: Socket.POLLPRI | Socket.POLLHUP | Socket.POLLERR | Socket.POLLNVAL;
 
     for < server.wsapollfds {
-        if it.fd == server.wakeup_socket {
+        if it.fd == server.wake_up_socket {
             if it.revents & Socket.POLLIN {
                 buffer: [64] u8;
-                Socket.recvfrom(server.wakeup_socket, buffer.data, 64, 0, null, null);
+                Socket.recvfrom(server.wake_up_socket, buffer.data, 64, 0, null, null);
             }
 
             continue;
@@ -134,8 +134,8 @@ Http_Server :: struct {
     tls:     bool;
     ssl_ctx: *LibreSSL.SSL_CTX;
 
-    wakeup_socket: Socket.Socket;
-    wakeup_port:   u16;
+    wake_up_socket: Socket.Socket;
+    wake_up_port:   u16;
 }
 
 #scope_module
