@@ -25,28 +25,27 @@ init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", 
     }
 
     server.wakeup_socket = Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
-    if server.wakeup_socket != Socket.INVALID_SOCKET {
-        addr: Socket.sockaddr_in;
-        addr.sin_family = Socket.AF_INET;
-        addr.sin_port = 0;
-        addr.sin_addr.S_un.S_addr = Socket.inet_addr("127.0.0.1");
+    if server.wakeup_socket == Socket.INVALID_SOCKET return true;
 
-        if Socket.bind(server.wakeup_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr))) == 0 {
-            addr_size: s32 = size_of(type_of(addr));
+    addr: Socket.sockaddr_in;
+    addr.sin_family = Socket.AF_INET;
+    addr.sin_port = 0;
+    addr.sin_addr.S_un.S_addr = Socket.inet_addr("127.0.0.1");
 
-            Socket.getsockname(server.wakeup_socket, cast(*Socket.sockaddr)*addr, *addr_size);
+    result = Socket.bind(server.wakeup_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
+    if result != 0 return true;
 
-            server.wakeup_port = Socket.ntohs(addr.sin_port);
+    addr_size: s32 = size_of(type_of(addr));
 
-            Socket.set_blocking(server.wakeup_socket, false);
+    Socket.getsockname(server.wakeup_socket, cast(*Socket.sockaddr)*addr, *addr_size);
 
-            wsapollfd_wakeup := Socket.WSAPOLLFD.{ fd = server.wakeup_socket, events = Socket.POLLIN };
+    server.wakeup_port = Socket.ntohs(addr.sin_port);
 
-            array_add(*server.wsapollfds, wsapollfd_wakeup);
-        } else {
-            Socket.close_and_reset(*server.wakeup_socket);
-        }
-    }
+    Socket.set_blocking(server.wakeup_socket, false);
+
+    wsapollfd_wakeup := Socket.WSAPOLLFD.{ fd = server.wakeup_socket, events = Socket.POLLIN };
+
+    array_add(*server.wsapollfds, wsapollfd_wakeup);
 
     server.tls = tls;
     return false;

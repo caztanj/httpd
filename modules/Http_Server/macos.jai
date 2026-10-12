@@ -34,31 +34,30 @@ init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", 
     }
 
     server.wakeup_socket = Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
-    if server.wakeup_socket != Socket.INVALID_SOCKET {
-        addr: Socket.sockaddr_in;
-        addr.sin_family = Socket.AF_INET;
-        addr.sin_port = 0;
-        addr.sin_addr.s_addr = Socket.INADDR_ANY;
+    if server.wakeup_socket == Socket.INVALID_SOCKET return true;
 
-        if Socket.bind(server.wakeup_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr))) == 0 {
-            addr_size: u32 = size_of(type_of(addr));
+    addr: Socket.sockaddr_in;
+    addr.sin_family = Socket.AF_INET;
+    addr.sin_port = 0;
+    addr.sin_addr.s_addr = Socket.INADDR_ANY;
 
-            Socket.getsockname(server.wakeup_socket, cast(*Socket.sockaddr)*addr, *addr_size);
+    result = Socket.bind(server.wakeup_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
+    if result != 0 return true;
 
-            server.wakeup_port = Socket.ntohs(addr.sin_port);
+    addr_size: u32 = size_of(type_of(addr));
 
-            Socket.set_blocking(server.wakeup_socket, false);
+    Socket.getsockname(server.wakeup_socket, cast(*Socket.sockaddr)*addr, *addr_size);
 
-            wakeup_event: Macos.Kevent64;
-            wakeup_event.ident = xx server.wakeup_socket;
-            wakeup_event.filter = .READ;
-            wakeup_event.flags = .ADD | .ENABLE;
+    server.wakeup_port = Socket.ntohs(addr.sin_port);
 
-            array_add(*server.kqueue_changes, wakeup_event);
-        } else {
-            Socket.close_and_reset(*server.wakeup_socket);
-        }
-    }
+    Socket.set_blocking(server.wakeup_socket, false);
+
+    wakeup_event: Macos.Kevent64;
+    wakeup_event.ident = xx server.wakeup_socket;
+    wakeup_event.filter = .READ;
+    wakeup_event.flags = .ADD | .ENABLE;
+
+    array_add(*server.kqueue_changes, wakeup_event);
 
     server.tls = tls;
 
