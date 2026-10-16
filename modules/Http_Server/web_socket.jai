@@ -175,7 +175,7 @@ parse_web_socket_frames :: (server: *Http_Server, client_id: Socket.Socket) {
             return;
         }
 
-        if client.ws_partial_payload.count + payload_length > MAX_WEB_SOCKET_MESSAGE_SIZE {
+        if payload_length > MAX_WEB_SOCKET_MESSAGE_SIZE || client.ws_partial_payload.count + payload_length > MAX_WEB_SOCKET_MESSAGE_SIZE {
             web_socket_close(server, client_id, .MESSAGE_TOO_BIG);
             return;
         }

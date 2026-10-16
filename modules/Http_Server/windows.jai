@@ -64,7 +64,7 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
     array_reset(*server.clients_to_close_in_next_iteration);
 
     timeout := process_timeouts_and_get_next_timeout(server);
-    if peek || server.events.count > 0 timeout = 0;
+    if peek || server.events.count > 0 || server.clients_to_close_in_next_iteration.count > 0 timeout = 0;
 
     number_of_events := Socket.WSAPoll(server.wsapollfds.data, xx server.wsapollfds.count, xx timeout);
     if number_of_events == Socket.SOCKET_ERROR return true, .[];

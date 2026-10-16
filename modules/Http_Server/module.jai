@@ -35,8 +35,8 @@ static_file :: (request: Http_Request, directory: string) -> Http_Response {
 
     if is_directory(path) {
         index_path := tprint("%/index.html", path);
-        if file_exists(index_path) path = index_path;
-        else                       return not_found(request);
+        if file_exists(index_path) && !is_directory(index_path) path = index_path;
+        else                                                    return not_found(request);
     }
 
     error, range := get_header(request.headers, "Range");
@@ -241,7 +241,14 @@ send_response :: (server: *Http_Server, response: Http_Response) {
     push_allocator(context.default_allocator);
 
     client := find_client(server, response.client_id);
-    if client == null return;
+    if client == null {
+        if response.file.handle {
+            file := response.file;
+            file_close(*file);
+        }
+
+        return;
+    }
 
     b: String_Builder;
     b.allocator = temp;
@@ -268,6 +275,8 @@ send_response :: (server: *Http_Server, response: Http_Response) {
     }
 
     if response.file.handle {
+        if client.send_file.handle file_close(*client.send_file);
+
         client.send_file        = response.file;
         client.send_file_offset = 0;
         client.send_file_size   = file_length(client.send_file);
@@ -402,15 +411,24 @@ accept_clients :: (server: *Http_Server) {
     while true {
         client_socket := Socket.accept_v6(server.listening_socket);
         if client_socket == Socket.INVALID_SOCKET {
-            error := Socket.get_last_socket_error();
-            if error == Socket.SOCKET_WOULDBLOCK return;
-            continue;
+            return;
         }
 
         client := add_client(server, client_socket);
 
+        success := Socket.set_blocking(client_socket, false);
+        if !success {
+            close(server, client);
+            continue;
+        }
+
         if server.tls {
             client.ssl = LibreSSL.SSL_new(server.ssl_ctx);
+            if !client.ssl {
+                print_ssl_errors();
+                close(server, client);
+                continue;
+            }
 
             LibreSSL.SSL_set_fd(client.ssl, xx client_socket);
 
@@ -423,12 +441,6 @@ accept_clients :: (server: *Http_Server) {
                     continue;
                 }
             }
-        }
-
-        success := Socket.set_blocking(client_socket, false);
-        if !success {
-            close(server, client);
-            continue;
         }
 
         error := add_to_queue(server, client);
@@ -457,17 +469,8 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
         }
 
         bytes_read := recv(server, client, offset, max);
-        if bytes_read == -1 {
-            error := Socket.get_last_socket_error();
-
-            if server.tls {
-                if LibreSSL.SSL_get_error(client.ssl, xx bytes_read) == {
-                    case LibreSSL.SSL_ERROR_WANT_READ;  #through;
-                    case LibreSSL.SSL_ERROR_WANT_WRITE; error = Socket.SOCKET_WOULDBLOCK;
-                }
-            }
-
-            if error != Socket.SOCKET_WOULDBLOCK {
+        if bytes_read < 0 {
+            if !would_block(server, client, bytes_read) {
                 close(server, client);
                 return true;
             }
@@ -484,7 +487,8 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
 
         client.read_buffer.count += bytes_read;
 
-        if client.type != .Web_Socket && client.read_buffer.count >= MAX_REQUEST_SIZE {
+        max_buffer_size := ifx client.type == .Web_Socket then MAX_WEB_SOCKET_MESSAGE_SIZE + 14 else MAX_REQUEST_SIZE;
+        if client.read_buffer.count >= max_buffer_size {
             close(server, client);
             return true;
         }
@@ -498,17 +502,8 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
 
     while client.send_buffer.count - client.send_buffer_offset > 0 {
         bytes_sent := send(server, client, client.send_buffer.data + client.send_buffer_offset, client.send_buffer.count - client.send_buffer_offset);
-        if bytes_sent == -1 {
-            error := Socket.get_last_socket_error();
-
-            if server.tls {
-                if LibreSSL.SSL_get_error(client.ssl, xx bytes_sent) == {
-                    case LibreSSL.SSL_ERROR_WANT_READ;  #through;
-                    case LibreSSL.SSL_ERROR_WANT_WRITE; error = Socket.SOCKET_WOULDBLOCK;
-                }
-            }
-
-            if error != Socket.SOCKET_WOULDBLOCK {
+        if bytes_sent < 0 {
+            if !would_block(server, client, bytes_sent) {
                 close(server, client);
                 return true;
             }
@@ -535,7 +530,7 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
     if client.send_file.handle {
         while client.send_file_offset < client.send_file_size {
             error, content := read_part_of_file(client.send_file, client.send_file_offset, kilobytes(32),, temp);
-            if error {
+            if error || content.count == 0 {
                 close(server, client);
                 return true;
             }
@@ -543,17 +538,8 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
             remaining := content;
             while remaining.count > 0 {
                 bytes_sent := send(server, client, remaining.data, remaining.count);
-                if bytes_sent == -1 {
-                    error := Socket.get_last_socket_error();
-
-                    if server.tls {
-                        if LibreSSL.SSL_get_error(client.ssl, xx bytes_sent) == {
-                            case LibreSSL.SSL_ERROR_WANT_READ;  #through;
-                            case LibreSSL.SSL_ERROR_WANT_WRITE; error = Socket.SOCKET_WOULDBLOCK;
-                        }
-                    }
-
-                    if error != Socket.SOCKET_WOULDBLOCK {
+                if bytes_sent < 0 {
+                    if !would_block(server, client, bytes_sent) {
                         close(server, client);
                         return true;
                     }
@@ -580,6 +566,20 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
     set_timeout(client, 30);
 
     return false;
+}
+
+would_block :: (server: *Http_Server, client: *Http_Client, result: int) -> bool {
+    if server.tls {
+        error := LibreSSL.SSL_get_error(client.ssl, xx result);
+        if error == LibreSSL.SSL_ERROR_WANT_READ || error == LibreSSL.SSL_ERROR_WANT_WRITE {
+            return true;
+        }
+
+        print_ssl_errors();
+        return false;
+    }
+
+    return Socket.get_last_socket_error() == Socket.SOCKET_WOULDBLOCK;
 }
 
 recv :: (server: *Http_Server, client: *Http_Client, buffer: *u8, size: int) -> int {
@@ -662,8 +662,10 @@ parse_request :: (using client: *Http_Client) -> Parse_Status, Http_Request {
         if equal_nocase(header.key, "Content-Length") {
             if content_length != -1 return .ERROR, .{};
 
-            content_length=, success:, remainder := string_to_int(header.value, T = u32);
-            if !success || remainder.count > 0 return .ERROR, .{};
+            error, parsed_length := parse_unsigned_int(header.value);
+            if error || parsed_length > MAX_REQUEST_SIZE return .ERROR, .{};
+
+            content_length = parsed_length;
         } else if equal_nocase(header.key, "Transfer-Encoding") {
             return .ERROR, .{};
         }
@@ -769,13 +771,14 @@ parse_header :: (using client: *Http_Client) -> Parse_Status, Http_Header {
 
     while t < max_t {
         if t.* == ":" break;
+        if t.* <= " " || t.* == 127 return .ERROR, .{};
         t += 1;
     }
 
     if t >= max_t return .INCOMPLETE, .{};
 
     header.key.count = t - header.key.data;
-    header.key = trim(header.key, chars=" ");
+    if header.key.count == 0 return .ERROR, .{};
 
     t += 1;
     if t >= max_t return .INCOMPLETE, .{};
@@ -791,11 +794,15 @@ parse_header :: (using client: *Http_Client) -> Parse_Status, Http_Header {
             break;
         }
 
+        if t.* == "\n" || t.* == 0 return .ERROR, .{};
+
         t += 1;
     }
 
+    if t >= max_t return .INCOMPLETE, .{};
+
     header.value.count = t - header.value.data;
-    header.value = trim(header.value, chars=" \r");
+    header.value = trim(header.value, chars=" \t\r");
 
     t += 1;
     if t >= max_t return .INCOMPLETE, .{};
@@ -848,7 +855,7 @@ process_timeouts_and_get_next_timeout :: (server: *Http_Server) -> int {
 }
 
 close_in_next_iteration :: (server: *Http_Server, client: *Http_Client) {
-    array_add(*server.clients_to_close_in_next_iteration, client.client_id);
+    array_add_if_unique(*server.clients_to_close_in_next_iteration, client.client_id);
 }
 
 close :: (server: *Http_Server, client: *Http_Client, now := false) {
@@ -856,7 +863,7 @@ close :: (server: *Http_Server, client: *Http_Client, now := false) {
     should_close_in_next_iteration &&= client.type == .Web_Socket || client.type == .SSE;
 
     if should_close_in_next_iteration {
-        array_add(*server.clients_to_close_in_next_iteration, client.client_id);
+        array_add_if_unique(*server.clients_to_close_in_next_iteration, client.client_id);
         return;
     }
 
@@ -869,9 +876,10 @@ close :: (server: *Http_Server, client: *Http_Client, now := false) {
         }
     }
 
-    if server.tls {
+    if server.tls && client.ssl {
         LibreSSL.SSL_shutdown(client.ssl);
         LibreSSL.SSL_free(client.ssl);
+        LibreSSL.ERR_clear_error();
     }
 
     socket := client.client_id;
@@ -966,6 +974,23 @@ kilobytes :: (n: int) -> int {
     return n * 1024;
 }
 
+parse_unsigned_int :: (s: string) -> error: bool, int {
+    if s.count == 0 return true, 0;
+
+    result := 0;
+    for i: 0..s.count - 1 {
+        c := s[i];
+        if !is_digit(c) return true, 0;
+
+        digit := cast(int) (c - #char "0");
+        if result > (S64_MAX - digit) / 10 return true, 0;
+
+        result = result * 10 + digit;
+    }
+
+    return false, result;
+}
+
 parse_range :: (header: string) -> error: bool, start: int, end: int {
     t     := header.data;
     max_t := header.data + header.count;
@@ -984,7 +1009,7 @@ parse_range :: (header: string) -> error: bool, start: int, end: int {
 
     if !equal_nocase(key, "bytes") return true, 0, 0;
 
-    if t.* != "=" return true, 0, 0;
+    if t >= max_t || t.* != "=" return true, 0, 0;
     t += 1;
 
     if t >= max_t return true, 0, 0;
@@ -1000,23 +1025,28 @@ parse_range :: (header: string) -> error: bool, start: int, end: int {
 
     start.count = t - start.data;
 
-    if t.* != "-" return true, 0, 0;
+    if t >= max_t || t.* != "-" return true, 0, 0;
 
     t += 1;
-    if t >= max_t return false, string_to_int(start), -1;
 
-    end := string.{ data = t };
+    end := string.{ data = t, count = max_t - t };
 
-    while t < max_t {
-        if !is_digit(t.*) return true, 0, 0;
+    if start.count == 0 && end.count == 0 return true, 0, 0;
 
-        t += 1;
+    start_int := -1;
+    if start.count > 0 {
+        error: bool;
+        error, start_int = parse_unsigned_int(start);
+        if error return true, 0, 0;
     }
 
-    end.count = t - end.data;
+    end_int := -1;
+    if end.count > 0 {
+        error: bool;
+        error, end_int = parse_unsigned_int(end);
+        if error return true, 0, 0;
+    }
 
-    start_int := ifx start.count == 0 then -1 else string_to_int(start);
-    end_int   := ifx end.count == 0 then -1 else string_to_int(end);
     return false, start_int, end_int;
 }
 
@@ -1069,20 +1099,20 @@ serve_static_file_range :: (request: Http_Request, path: string) -> Http_Respons
     if !success return internal_server_error(request);
 
     if start == -1 {
-        start = length - end;
-        if start < 0 start = 0;
+        if end == 0 return bad_request(request);
+        start = max(0, length - end);
         end = length - 1;
-    } else if end == -1 {
-        end = start + kilobytes(1024);
+    } else if end == -1 || end >= length {
+        end = length - 1;
     }
 
     if start >= length {
         response.status = .RANGE_NOT_SATISFIABLE;
         set_header(*response.headers, "Content-Range", tprint("bytes */%", length));
+        set_header(*response.headers, "Content-Length", "0");
         return response;
     }
 
-    if end >= length end = length - 1;
     if start > end return bad_request(request);
 
     if end - start + 1 > kilobytes(1024) {

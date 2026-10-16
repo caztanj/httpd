@@ -39,7 +39,7 @@ init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", 
     addr: Socket.sockaddr_in;
     addr.sin_family = Socket.AF_INET;
     addr.sin_port = 0;
-    addr.sin_addr.s_addr = Socket.INADDR_ANY;
+    addr.sin_addr.s_addr = Socket.inet_addr("127.0.0.1");
 
     result = Socket.bind(server.wake_up_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
     if result != 0 return true;
@@ -78,7 +78,7 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
 
     timeout := process_timeouts_and_get_next_timeout(server);
 
-    if peek || server.events.count > 0 timeout = 0;
+    if peek || server.events.count > 0 || server.clients_to_close_in_next_iteration.count > 0 timeout = 0;
 
     timespec: POSIX.timespec;
     if timeout >= 0 {

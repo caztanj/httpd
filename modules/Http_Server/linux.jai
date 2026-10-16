@@ -41,7 +41,7 @@ init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", 
     addr: Socket.sockaddr_in;
     addr.sin_family = Socket.AF_INET;
     addr.sin_port = 0;
-    addr.sin_addr.s_addr = Socket.INADDR_ANY;
+    addr.sin_addr.s_addr = Socket.inet_addr("127.0.0.1");
 
     result = Socket.bind(server.wake_up_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
     if result != 0 return true;
@@ -78,7 +78,7 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
     array_reset(*server.clients_to_close_in_next_iteration);
 
     timeout := process_timeouts_and_get_next_timeout(server);
-    if peek || server.events.count > 0 timeout = 0;
+    if peek || server.events.count > 0 || server.clients_to_close_in_next_iteration.count > 0 timeout = 0;
 
     epoll_events: [1024] Linux.epoll_event;
     number_of_events := Linux.epoll_wait(server.epoll_queue, epoll_events.data, epoll_events.count, xx timeout);
@@ -89,7 +89,7 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
 
         if event.data.fd == server.wake_up_socket {
             buffer: [64] u8;
-            Socket.recvfrom(server.wake_up_socket, buffer.data, 64, 0, null, null);
+            while Socket.recvfrom(server.wake_up_socket, buffer.data, 64, 0, null, null) > 0 {}
             continue;
         }
 
