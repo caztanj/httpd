@@ -7,18 +7,35 @@ main :: () {
 
     if !is_set.directory {
         log_error("No directory to serve.");
+        array_free(free_arguments);
         exit(.NO_DIRECTORY_TO_SERVE);
+    }
+
+    tls := is_set.certificate || is_set.cert;
+    if !arguments.certificate arguments.certificate = arguments.cert;
+
+    if tls {
+        if !is_set.key {
+            arguments.key = arguments.certificate;
+        }
+    } else if is_set.key {
+        log_error("No certificate provided for key.");
+        array_free(free_arguments);
+        exit(.FAILED_TO_PARSE_ARGUMENTS);
     }
 
     arguments.directory = copy_string(get_absolute_path(arguments.directory));
 
-    error := init(*server, arguments.port);
+    error := init(*server, arguments.port, tls = tls, certificate_file = arguments.certificate, private_key_file = arguments.key);
     if error {
         log_error("Unable to initialize the HTTP server.");
+        free(arguments.directory);
+        array_free(free_arguments);
         exit(.HTTP_SERVER_INITIALIZATION_FAILED);
     }
 
-    log("Listening on http://localhost:%", arguments.port);
+    protocol := ifx tls then "https" else "http";
+    log("Listening on %://localhost:%", protocol, arguments.port);
 
     while !quit {
         push_allocator(temp);
@@ -88,12 +105,16 @@ handle_event :: (event: Http_Event) {
 }
 
 Arguments :: struct {
-    quiet:     bool;
-    directory: string;
+    quiet:       bool;
+    directory:   string;
 
-    port: u16 = 3000;
+    port:        u16 = 3000;
 
-    debug: bool;
+    debug:       bool;
+
+    certificate: string;
+    cert:        string;
+    key:         string;
 }
 
 Exit_Code :: enum {
