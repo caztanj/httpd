@@ -96,15 +96,13 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
         }
 
         if it.revents & Socket.POLLOUT {
-            closed := send_to_client(server, client_id);
+            closed := client_can_send(server, client_id);
             if closed continue;
         }
 
         if it.revents & Socket.POLLIN {
-            closed := read_from_client(server, client_id);
+            closed := client_can_read(server, client_id);
             if closed continue;
-
-            parse_requests(server, client_id);
         }
     }
 

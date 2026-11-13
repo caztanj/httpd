@@ -458,6 +458,9 @@ accept_clients :: (server: *Http_Server) {
 
 read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bool {
     client := find_client(server, client_id);
+    if client == null return true;
+
+    client.ssl_read_wants_write = false;
 
     while true {
         offset := client.read_buffer.data + client.read_buffer.count;
@@ -475,9 +478,16 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
             error := Socket.get_last_socket_error();
 
             if server.tls {
-                if LibreSSL.SSL_get_error(client.ssl, xx bytes_read) == {
-                    case LibreSSL.SSL_ERROR_WANT_READ;  #through;
-                    case LibreSSL.SSL_ERROR_WANT_WRITE; error = Socket.SOCKET_WOULDBLOCK;
+                ssl_error := LibreSSL.SSL_get_error(client.ssl, xx bytes_read);
+                if ssl_error == {
+                    case LibreSSL.SSL_ERROR_WANT_READ;
+                        error = Socket.SOCKET_WOULDBLOCK;
+
+                    case LibreSSL.SSL_ERROR_WANT_WRITE;
+                        client.ssl_read_wants_write = true;
+                        notify_when_sendable(server, client);
+                        set_timeout(client, 30);
+                        return false;
                 }
             }
 
@@ -507,30 +517,47 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
     return false;
 }
 
+handle_send_failure :: (server: *Http_Server, client: *Http_Client, bytes_sent: int) -> closed: bool {
+    error := Socket.get_last_socket_error();
+
+    if server.tls {
+        ssl_error := LibreSSL.SSL_get_error(client.ssl, xx bytes_sent);
+        if ssl_error == {
+            case LibreSSL.SSL_ERROR_WANT_READ;
+                client.ssl_write_wants_read = true;
+
+                if !client.ssl_read_wants_write do_not_notify_when_sendable(server, client);
+
+                set_timeout(client, 30);
+
+                return false;
+
+            case LibreSSL.SSL_ERROR_WANT_WRITE;
+                error = Socket.SOCKET_WOULDBLOCK;
+        }
+    }
+
+    if error != Socket.SOCKET_WOULDBLOCK {
+        close(server, client);
+        return true;
+    }
+
+    set_timeout(client, 30);
+    notify_when_sendable(server, client);
+
+    return false;
+}
+
 send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bool {
     client := find_client(server, client_id);
+    if client == null return true;
+
+    client.ssl_write_wants_read = false;
 
     while client.send_buffer.count - client.send_buffer_offset > 0 {
         bytes_sent := send(server, client, client.send_buffer.data + client.send_buffer_offset, client.send_buffer.count - client.send_buffer_offset);
         if bytes_sent == -1 {
-            error := Socket.get_last_socket_error();
-
-            if server.tls {
-                if LibreSSL.SSL_get_error(client.ssl, xx bytes_sent) == {
-                    case LibreSSL.SSL_ERROR_WANT_READ;  #through;
-                    case LibreSSL.SSL_ERROR_WANT_WRITE; error = Socket.SOCKET_WOULDBLOCK;
-                }
-            }
-
-            if error != Socket.SOCKET_WOULDBLOCK {
-                close(server, client);
-                return true;
-            }
-
-            set_timeout(client, 30);
-            notify_when_sendable(server, client);
-
-            return false;
+            return handle_send_failure(server, client, bytes_sent);
         }
 
         client.send_buffer_offset += bytes_sent;
@@ -558,24 +585,7 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
             while remaining.count > 0 {
                 bytes_sent := send(server, client, remaining.data, remaining.count);
                 if bytes_sent == -1 {
-                    error := Socket.get_last_socket_error();
-
-                    if server.tls {
-                        if LibreSSL.SSL_get_error(client.ssl, xx bytes_sent) == {
-                            case LibreSSL.SSL_ERROR_WANT_READ;  #through;
-                            case LibreSSL.SSL_ERROR_WANT_WRITE; error = Socket.SOCKET_WOULDBLOCK;
-                        }
-                    }
-
-                    if error != Socket.SOCKET_WOULDBLOCK {
-                        close(server, client);
-                        return true;
-                    }
-
-                    set_timeout(client, 30);
-                    notify_when_sendable(server, client);
-
-                    return false;
+                    return handle_send_failure(server, client, bytes_sent);
                 }
 
                 client.send_file_offset += bytes_sent;
@@ -590,10 +600,40 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
         client.send_file_size   = 0;
     }
 
-    do_not_notify_when_sendable(server, client);
+    if !client.ssl_read_wants_write do_not_notify_when_sendable(server, client);
     set_timeout(client, 30);
 
     return false;
+}
+
+client_can_read :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bool {
+    client := find_client(server, client_id);
+    if client == null return true;
+
+    if client.ssl_write_wants_read {
+        closed := send_to_client(server, client_id);
+        if closed return true;
+    }
+
+    closed := read_from_client(server, client_id);
+    if closed return true;
+
+    parse_requests(server, client_id);
+    return false;
+}
+
+client_can_send :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bool {
+    client := find_client(server, client_id);
+    if client == null return true;
+
+    if client.ssl_read_wants_write {
+        closed := read_from_client(server, client_id);
+        if closed return true;
+
+        parse_requests(server, client_id);
+    }
+
+    return send_to_client(server, client_id);
 }
 
 recv :: (server: *Http_Server, client: *Http_Client, buffer: *u8, size: int) -> int {
@@ -614,6 +654,7 @@ send :: (server: *Http_Server, client: *Http_Client, buffer: *u8, size: int) -> 
 
 parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
     client := find_client(server, client_id);
+    if client == null return;
 
     if client.type == {
         case .SSE;
@@ -883,7 +924,7 @@ close :: (server: *Http_Server, client: *Http_Client, now := false) {
         }
     }
 
-    if server.tls {
+    if server.tls && client.ssl {
         LibreSSL.SSL_shutdown(client.ssl);
         LibreSSL.SSL_free(client.ssl);
     }
@@ -1205,6 +1246,8 @@ Http_Client :: struct {
     send_buffer_offset: int;
 
     ssl: *LibreSSL.SSL;
+    ssl_read_wants_write: bool;
+    ssl_write_wants_read: bool;
 
     send_file:        File;
     send_file_offset: int;
