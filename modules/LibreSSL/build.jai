@@ -93,7 +93,7 @@ get_platform_identifier :: () -> string {
 
 #run main();
 
-BUILD_DIRECTORY :: "LibreSSL-4.4.0/build";
+BUILD_DIRECTORY :: "LibreSSL-4.4.1/build";
 
 #import "Basic";
 #import "Compiler";
