@@ -16,8 +16,15 @@ get_header :: (headers: [] Http_Header, key: string) -> error: bool, string {
 }
 
 set_header :: (headers: *[..] Http_Header, key: string, value: string) {
-    // @Warning: Do not pass unvalidated user input into 'key' or 'value'
-    // as it could lead to HTTP Response Splitting (CRLF injection) if it contains \r or \n.
+    if key.count == 0 return;
+
+    for key {
+        if !HEADER_KEY_ALLOWED_CHARS[it] return;
+    }
+
+    for value {
+        if (it < 0x20 && it != #char "\t") || it == 0x7F return;
+    }
 
     push_allocator(context.default_allocator);
 
@@ -145,7 +152,15 @@ print_http_request :: (request: *Http_Request) {
     }
 
     if request.body.count != 0 {
-        print_to_builder(*b, "%\n", request.body);
+        for request.body {
+            if (it < 0x20 && it != #char "\n" && it != #char "\t") || it == 0x7F {
+                append(*b, ".");
+            } else {
+                append(*b, it);
+            }
+        }
+
+        append(*b, "\n");
     }
 
     print("%\n", builder_to_string(*b,, temp));
@@ -1224,11 +1239,15 @@ parse_range :: (header: string) -> error: bool, start: int, end: int {
     }
 
     start.count = t - start.data;
+    if start.count > 18 return true, 0, 0;
 
     if t.* != "-" return true, 0, 0;
 
     t += 1;
-    if t >= max_t return false, string_to_int(start), -1;
+    if t >= max_t {
+        if start.count == 0 return true, 0, 0;
+        return false, string_to_int(start), -1;
+    }
 
     end := string.{ data = t };
 
@@ -1239,6 +1258,8 @@ parse_range :: (header: string) -> error: bool, start: int, end: int {
     }
 
     end.count = t - end.data;
+    if end.count > 18 return true, 0, 0;
+    if start.count == 0 && end.count == 0 return true, 0, 0;
 
     start_int := ifx start.count == 0 then -1 else string_to_int(start);
     end_int   := ifx end.count == 0 then -1 else string_to_int(end);
@@ -1294,17 +1315,20 @@ serve_static_file_range :: (request: Http_Request, path: string) -> Http_Respons
     if !success return internal_server_error(request);
 
     if start == -1 {
+        if end <= 0 return bad_request(request);
         start = length - end;
         if start < 0 start = 0;
         end = length - 1;
-    } else if end == -1 {
-        end = start + kilobytes(1024);
     }
 
     if start >= length {
         response.status = .RANGE_NOT_SATISFIABLE;
         set_header(*response.headers, "Content-Range", tprint("bytes */%", length));
         return response;
+    }
+
+    if end == -1 {
+        end = start + kilobytes(1024);
     }
 
     if end >= length end = length - 1;

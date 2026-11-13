@@ -87,6 +87,7 @@ handle_event :: (event: Http_Event) {
     set_header(*response.headers, "Cross-Origin-Resource-Policy", "same-origin");
     set_header(*response.headers, "X-Frame-Options", "DENY");
     set_header(*response.headers, "Referrer-Policy", "strict-origin-when-cross-origin");
+    set_header(*response.headers, "Content-Security-Policy", "script-src 'self'");
 
     send_response(*server, response);
 }
