@@ -476,7 +476,12 @@ Http_Timer :: struct {
 
 accept_clients :: (server: *Http_Server) {
     while true {
-        client_socket := Socket.accept_v6(server.listening_socket);
+        #if OS == .LINUX {
+            client_socket := Socket.accept4(server.listening_socket, null, null, .SOCK_NONBLOCK);
+        } else {
+            client_socket := Socket.accept(server.listening_socket, null, null);
+        }
+
         if client_socket == Socket.INVALID_SOCKET {
             error := Socket.get_last_socket_error();
             if error == Socket.SOCKET_WOULDBLOCK return;
@@ -490,11 +495,16 @@ accept_clients :: (server: *Http_Server) {
 
         client := add_client(server, client_socket);
 
-        success := Socket.set_blocking(client_socket, false);
-        if !success {
-            close(server, client);
-            continue;
+        #if OS != .LINUX {
+            success := Socket.set_blocking(client_socket, false);
+            if !success {
+                close(server, client);
+                continue;
+            }
         }
+
+        no_delay: s32 = 1;
+        Socket.setsockopt(client_socket, xx Socket.IPPROTO.IPPROTO_TCP, Socket.TCP_NODELAY, xx *no_delay, size_of(type_of(no_delay)));
 
         if server.tls {
             client.ssl = LibreSSL.SSL_new(server.ssl_ctx);
@@ -1212,6 +1222,9 @@ create_and_bind_listening_socket :: (server: *Http_Server, address: string, port
     } else {
         return true;
     }
+
+    no_delay: s32 = 1;
+    Socket.setsockopt(socket, xx Socket.IPPROTO.IPPROTO_TCP, Socket.TCP_NODELAY, xx *no_delay, size_of(type_of(no_delay)));
 
     result := Socket.listen(socket, Socket.SOMAXCONN);
     if result != 0 {
