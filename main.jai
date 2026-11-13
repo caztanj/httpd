@@ -91,12 +91,7 @@ handle_event :: (event: Http_Event) {
     response: Http_Response;
 
     if request.method == .GET {
-        response = static_file(request, arguments.directory);
-
-        if response.status == .NOT_FOUND {
-            request.uri = tprint("%/index.html", request.uri);
-            response    = static_file(request, arguments.directory);
-        }
+        response = static_file(request, arguments.directory, directory_is_absolute = true);
     } else {
         response = bad_request(request);
     }

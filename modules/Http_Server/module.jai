@@ -40,25 +40,45 @@ set_header :: (headers: *[..] Http_Header, key: string, value: string) {
     array_add(headers, header);
 }
 
-static_file :: (request: Http_Request, directory: string) -> Http_Response {
+static_file :: (request: Http_Request, directory: string, directory_is_absolute := false) -> Http_Response {
     push_allocator(temp);
 
     decoded_uri := percent_decode(request.uri);
     if contains(decoded_uri, "\0") return bad_request(request);
 
-    absolute_directory, success := get_absolute_path(directory);
-    if !success return internal_server_error(request);
+    resolve_path :: (path: string) -> string, success: bool {
+        #if OS == .LINUX || OS == .MACOS {
+            buffer: [4096] u8;
+            result := POSIX.realpath(temp_c_string(path), buffer.data);
+            if result == null return "", false;
+
+            return copy_temporary_string(to_string(buffer.data)), true;
+        } else {
+            absolute_path, success := get_absolute_path(path);
+            return absolute_path, success;
+        }
+    }
+
+    absolute_directory := directory;
+    if !directory_is_absolute {
+        success: bool;
+        absolute_directory, success = resolve_path(directory);
+        if !success return internal_server_error(request);
+    }
 
     path := join(absolute_directory, "/", decoded_uri);
-    if !file_exists(path) return not_found(request);
 
-    if is_directory(path) {
+    path_is_directory, success := is_directory(path);
+    if !success return not_found(request);
+
+    if path_is_directory {
         index_path := tprint("%/index.html", path);
         if file_exists(index_path) path = index_path;
         else                       return not_found(request);
     }
 
-    absolute_path:, success = get_absolute_path(path);
+    absolute_path: string;
+    absolute_path, success = resolve_path(path);
     if !success return not_found(request);
 
     is_inside :: (path: string, directory: string) -> bool {
@@ -316,7 +336,7 @@ send_response :: (server: *Http_Server, response: Http_Response) {
 
         client.send_file        = response.file;
         client.send_file_offset = response.file_offset;
-        client.send_file_end    = ifx response.file_size > 0 || response.file_offset > 0 then response.file_offset + response.file_size else file_length(client.send_file);
+        client.send_file_end    = ifx response.file_size >= 0 then response.file_offset + response.file_size else file_length(client.send_file);
     }
 
     send_to_client(server, response.client_id);
@@ -401,7 +421,7 @@ Http_Response :: struct {
 
     file:        File;
     file_offset: int;
-    file_size:   int;
+    file_size:   int = -1;
 }
 
 Http_Method :: enum {
