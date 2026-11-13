@@ -1,58 +1,29 @@
-init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", private_key_file := "") -> error: bool {
+init :: (server: *Http_Server, port: u16, address := "127.0.0.1", tls := false, certificate_file := "", private_key_file := "") -> error: bool {
     POSIX.signal(POSIX.SIGPIPE, POSIX.SIG_IGN);
 
     server.epoll_queue = Linux.epoll_create1(0);
     if server.epoll_queue == -1 return true;
 
-    server.listening_socket = Socket.socket(Socket.AF_INET6, .SOCK_STREAM, Socket.IPPROTO.IPPROTO_TCP);
-    if server.listening_socket == Socket.INVALID_SOCKET return true;
-
-    options := 1;
-    result := Socket.setsockopt(server.listening_socket, Socket.SOL_SOCKET, Socket.SO_REUSEPORT, *options, size_of(type_of(options)));
-    if result == -1 return true;
-
-    result = Socket.bind(server.listening_socket, Socket.in6addr_any.__in6_u.__u6_addr8, port);
-    if result != 0 return true;
-
-    result = Socket.listen(server.listening_socket, Socket.SOMAXCONN);
-    if result != 0 return true;
-
-    success := Socket.set_blocking(server.listening_socket, false);
-    if !success return true;
+    error := create_and_bind_listening_socket(server, address, port);
+    if error return true;
 
     event: Linux.epoll_event;
     event.events = Linux.EPOLLET | Linux.EPOLLIN;
     event.data.fd = server.listening_socket;
 
-    result = Linux.epoll_ctl(server.epoll_queue, .ADD, server.listening_socket, *event);
+    result := Linux.epoll_ctl(server.epoll_queue, .ADD, server.listening_socket, *event);
     if result == -1 return true;
 
     if tls {
         server.ssl_ctx = create_ssl_context();
         if server.ssl_ctx == null return true;
 
-        error := configure_ssl_context(server.ssl_ctx, certificate_file, private_key_file);
+        error = configure_ssl_context(server.ssl_ctx, certificate_file, private_key_file);
         if error return true;
     }
 
-    server.wake_up_socket = Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
-    if server.wake_up_socket == Socket.INVALID_SOCKET return true;
-
-    addr: Socket.sockaddr_in;
-    addr.sin_family = Socket.AF_INET;
-    addr.sin_port = 0;
-    addr.sin_addr.s_addr = Socket.INADDR_ANY;
-
-    result = Socket.bind(server.wake_up_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
-    if result != 0 return true;
-
-    addr_size: u32 = size_of(type_of(addr));
-
-    Socket.getsockname(server.wake_up_socket, cast(*Socket.sockaddr)*addr, *addr_size);
-
-    server.wake_up_port = Socket.ntohs(addr.sin_port);
-
-    Socket.set_blocking(server.wake_up_socket, false);
+    error = create_wake_up_socket(server);
+    if error return true;
 
     wake_up_event: Linux.epoll_event;
     wake_up_event.events = Linux.EPOLLET | Linux.EPOLLIN;

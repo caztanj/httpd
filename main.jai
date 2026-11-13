@@ -12,14 +12,17 @@ main :: () {
 
     arguments.directory = copy_string(get_absolute_path(arguments.directory));
 
-    error := init(*server, arguments.port);
+    error := init(*server, arguments.port, arguments.address);
     if error {
         log_error("Unable to initialize the HTTP server.");
         exit(.HTTP_SERVER_INITIALIZATION_FAILED);
     }
 
-    // @Todo: Make it possible to listen on other interfaces than just localhost.
-    log("Listening on http://localhost:%", arguments.port);
+    if contains(arguments.address, ":") {
+        log("Listening on http://[%]:%", arguments.address, arguments.port);
+    } else {
+        log("Listening on http://%:%", arguments.address, arguments.port);
+    }
 
     while !quit {
         push_allocator(temp);
@@ -92,7 +95,8 @@ Arguments :: struct {
     quiet:     bool;
     directory: string;
 
-    port: u16 = 3000; // @Todo: Maybe the default port should be 80 for HTTP and 443 for HTTPS?
+    address: string = "127.0.0.1";
+    port:    u16    = 3000; // @Todo: Maybe the default port should be 80 for HTTP and 443 for HTTPS?
 
     debug: bool;
 
@@ -120,3 +124,4 @@ DEBUG_MEMORY :: false;
 #import "Command_Line";
 #import "File";
 #import "Http_Server";
+#import "String";

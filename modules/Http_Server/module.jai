@@ -986,6 +986,98 @@ remove_client :: (server: *Http_Server, client: *Http_Client) {
     table_remove(*server.clients, client_id);
 }
 
+create_and_bind_listening_socket :: (server: *Http_Server, address: string, port: u16) -> error: bool {
+    ip   := ifx address == "localhost" then "127.0.0.1" else address;
+    c_ip := temp_c_string(ip);
+
+    ipv4: u32;
+    ipv6: [16] u8;
+
+    socket := Socket.INVALID_SOCKET;
+
+    if Socket.inet_pton(Socket.AF_INET, c_ip, *ipv4) == 1 {
+        socket = Socket.socket(Socket.AF_INET, .SOCK_STREAM, Socket.IPPROTO.IPPROTO_TCP);
+        if socket == Socket.INVALID_SOCKET return true;
+
+        #if OS == .LINUX || OS == .MACOS {
+            options: s32 = 1;
+            if Socket.setsockopt(socket, Socket.SOL_SOCKET, Socket.SO_REUSEPORT, *options, size_of(type_of(options))) == -1 {
+                Socket.close_and_reset(*socket);
+                return true;
+            }
+        }
+
+        if Socket.bind(socket, Socket.ntohl(ipv4), port) != 0 {
+            Socket.close_and_reset(*socket);
+            return true;
+        }
+    } else if Socket.inet_pton(Socket.AF_INET6, c_ip, ipv6.data) == 1 {
+        socket = Socket.socket(Socket.AF_INET6, .SOCK_STREAM, Socket.IPPROTO.IPPROTO_TCP);
+        if socket == Socket.INVALID_SOCKET return true;
+
+        #if OS == .LINUX || OS == .MACOS {
+            options: s32 = 1;
+            if Socket.setsockopt(socket, Socket.SOL_SOCKET, Socket.SO_REUSEPORT, *options, size_of(type_of(options))) == -1 {
+                Socket.close_and_reset(*socket);
+                return true;
+            }
+        }
+
+        if Socket.bind(socket, ipv6, port) != 0 {
+            Socket.close_and_reset(*socket);
+            return true;
+        }
+    } else {
+        return true;
+    }
+
+    if Socket.listen(socket, Socket.SOMAXCONN) != 0 {
+        Socket.close_and_reset(*socket);
+        return true;
+    }
+
+    if !Socket.set_blocking(socket, false) {
+        Socket.close_and_reset(*socket);
+        return true;
+    }
+
+    server.listening_socket = socket;
+
+    return false;
+}
+
+create_wake_up_socket :: (server: *Http_Server) -> error: bool {
+    socket := Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
+    if socket == Socket.INVALID_SOCKET return true;
+
+    if Socket.bind(socket, 0x7F000001, 0) != 0 {
+        Socket.close_and_reset(*socket);
+        return true;
+    }
+
+    addr: Socket.sockaddr_in;
+    #if OS == .WINDOWS {
+        addr_size: s32 = size_of(type_of(addr));
+    } else {
+        addr_size: u32 = size_of(type_of(addr));
+    }
+
+    if Socket.getsockname(socket, cast(*Socket.sockaddr)*addr, *addr_size) != 0 {
+        Socket.close_and_reset(*socket);
+        return true;
+    }
+
+    if !Socket.set_blocking(socket, false) {
+        Socket.close_and_reset(*socket);
+        return true;
+    }
+
+    server.wake_up_socket = socket;
+    server.wake_up_port   = Socket.ntohs(addr.sin_port);
+
+    return false;
+}
+
 create_ssl_context :: () -> *LibreSSL.SSL_CTX {
     method := LibreSSL.TLS_server_method();
     ctx    := LibreSSL.SSL_CTX_new(method);

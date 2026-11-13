@@ -1,17 +1,8 @@
-init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", private_key_file := "") -> error: bool {
+init :: (server: *Http_Server, port: u16, address := "127.0.0.1", tls := false, certificate_file := "", private_key_file := "") -> error: bool {
     Socket.socket_init();
 
-    server.listening_socket = Socket.socket(Socket.AF_INET, .SOCK_STREAM, Socket.IPPROTO.IPPROTO_TCP);
-    if server.listening_socket == Socket.INVALID_SOCKET return true;
-
-    result := Socket.bind(server.listening_socket, Socket.INADDR_ANY, port);
-    if result != 0 return true;
-
-    result = Socket.listen(server.listening_socket, Socket.SOMAXCONN);
-    if result != 0 return true;
-
-    success := Socket.set_blocking(server.listening_socket, false);
-    if !success return true;
+    error := create_and_bind_listening_socket(server, address, port);
+    if error return true;
 
     wsapollfd := Socket.WSAPOLLFD.{ fd = server.listening_socket, events = Socket.POLLIN };
     array_add(*server.wsapollfds, wsapollfd);
@@ -20,28 +11,12 @@ init :: (server: *Http_Server, port: u16, tls := false, certificate_file := "", 
         server.ssl_ctx = create_ssl_context();
         if server.ssl_ctx == null return true;
 
-        error := configure_ssl_context(server.ssl_ctx, certificate_file, private_key_file);
+        error = configure_ssl_context(server.ssl_ctx, certificate_file, private_key_file);
         if error return true;
     }
 
-    server.wake_up_socket = Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
-    if server.wake_up_socket == Socket.INVALID_SOCKET return true;
-
-    addr: Socket.sockaddr_in;
-    addr.sin_family = Socket.AF_INET;
-    addr.sin_port = 0;
-    addr.sin_addr.S_un.S_addr = Socket.inet_addr("127.0.0.1");
-
-    result = Socket.bind(server.wake_up_socket, cast(*Socket.sockaddr)*addr, size_of(type_of(addr)));
-    if result != 0 return true;
-
-    addr_size: s32 = size_of(type_of(addr));
-
-    Socket.getsockname(server.wake_up_socket, cast(*Socket.sockaddr)*addr, *addr_size);
-
-    server.wake_up_port = Socket.ntohs(addr.sin_port);
-
-    Socket.set_blocking(server.wake_up_socket, false);
+    error = create_wake_up_socket(server);
+    if error return true;
 
     wsapollfd_wake_up := Socket.WSAPOLLFD.{ fd = server.wake_up_socket, events = Socket.POLLIN };
 
