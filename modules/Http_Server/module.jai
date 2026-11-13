@@ -901,7 +901,7 @@ process_timeouts_and_get_next_timeout :: (server: *Http_Server) -> int {
 
     for timed_out_clients {
         client := find_client(server, it);
-        close(server, client);
+        if client close(server, client);
     }
 
     for * server.timers {
