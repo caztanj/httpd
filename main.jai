@@ -59,7 +59,7 @@ main :: () {
     free(arguments.directory);
     array_free(free_arguments);
 
-    #if DEBUG_MEMORY report_memory_leaks();
+    #if DEBUG report_memory_leaks();
 }
 
 logger :: (message: string, data: *void, info: Log_Info) {
@@ -68,7 +68,7 @@ logger :: (message: string, data: *void, info: Log_Info) {
 }
 
 exit :: (code: Exit_Code) {
-    #if DEBUG_MEMORY report_memory_leaks();
+    #if DEBUG report_memory_leaks();
 
     exit(cast(s32) code);
 }
@@ -82,8 +82,10 @@ handle_event :: (event: Http_Event) {
         print_http_request(*request);
     }
 
-    if arguments.debug && request.uri == "/stop" {
-        quit = true;
+    #if DEBUG {
+        if request.uri == "/stop" {
+            quit = true;
+        }
     }
 
     response: Http_Response;
@@ -118,8 +120,6 @@ Arguments :: struct {
     tls:              bool;
     certificate_file: string;
     private_key_file: string;
-
-    debug: bool;
 }
 
 Exit_Code :: enum {
@@ -138,9 +138,9 @@ server:    Http_Server;
 
 default_logger: Logger;
 
-DEBUG_MEMORY :: false;
+DEBUG :: false;
 
-#import "Basic" () (MEMORY_DEBUGGER = DEBUG_MEMORY);
+#import "Basic" () (MEMORY_DEBUGGER = DEBUG);
 #import "Command_Line";
 #import "File";
 #import "Http_Server";
