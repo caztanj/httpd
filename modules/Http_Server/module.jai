@@ -600,7 +600,7 @@ handle_send_failure :: (server: *Http_Server, client: *Http_Client, bytes_sent: 
 
                 if !client.ssl_read_wants_write do_not_notify_when_sendable(server, client);
 
-                set_timeout(client, 30);
+                set_timeout(server, client, 30);
 
                 return false;
 
@@ -614,7 +614,7 @@ handle_send_failure :: (server: *Http_Server, client: *Http_Client, bytes_sent: 
         return true;
     }
 
-    set_timeout(client, 30);
+    set_timeout(server, client, 30);
     notify_when_sendable(server, client);
 
     return false;
@@ -669,7 +669,7 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
                     client.send_file_offset = offset;
 
                     if bytes_sent < remaining {
-                        set_timeout(client, 30);
+                        set_timeout(server, client, 30);
                         notify_when_sendable(server, client);
                         return false;
                     }
@@ -751,7 +751,7 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
     }
 
     if !client.ssl_read_wants_write do_not_notify_when_sendable(server, client);
-    set_timeout(client, 30);
+    set_timeout(server, client, 30);
 
     return false;
 }
@@ -839,7 +839,7 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
 
         request.client_id = client_id;
 
-        set_timeout(client, 30);
+        set_timeout(server, client, 30);
 
         array_add(*server.events, .{ type = .Http_Request, http_request = request });
     }
@@ -1025,31 +1025,49 @@ parse_header :: (using client: *Http_Client) -> Parse_Status, Http_Header {
     return .SUCCESS, header;
 }
 
-set_timeout :: (using client: *Http_Client, seconds: int) {
+set_timeout :: (server: *Http_Server, using client: *Http_Client, seconds: int) {
     timeout = current_time_monotonic() + seconds_to_apollo(seconds);
+
+    if !server.has_next_client_timeout || timeout < server.next_client_timeout {
+        server.next_client_timeout     = timeout;
+        server.has_next_client_timeout = true;
+    }
 }
 
 process_timeouts_and_get_next_timeout :: (server: *Http_Server) -> int {
     now := current_time_monotonic();
     earliest := -1;
 
-    timed_out_clients: [..] Socket.Socket;
-    timed_out_clients.allocator = temp;
+    if server.clients.count == 0 {
+        server.has_next_client_timeout = false;
+    } else if server.has_next_client_timeout && now < server.next_client_timeout {
+        earliest = to_milliseconds(server.next_client_timeout - now);
+    } else {
+        timed_out_clients: [..] Socket.Socket;
+        timed_out_clients.allocator = temp;
 
-    for * server.clients {
-        if it.timeout <= now {
-            array_add(*timed_out_clients, it.client_id);
-            continue;
+        server.has_next_client_timeout = false;
+
+        for * server.clients {
+            if it.timeout <= now {
+                array_add(*timed_out_clients, it.client_id);
+                continue;
+            }
+
+            if !server.has_next_client_timeout || it.timeout < server.next_client_timeout {
+                server.next_client_timeout     = it.timeout;
+                server.has_next_client_timeout = true;
+            }
         }
 
-        this := to_milliseconds(it.timeout - now);
+        for timed_out_clients {
+            client := find_client(server, it);
+            if client close(server, client);
+        }
 
-        if earliest == -1 || this < earliest earliest = this;
-    }
-
-    for timed_out_clients {
-        client := find_client(server, it);
-        if client close(server, client);
+        if server.has_next_client_timeout {
+            earliest = to_milliseconds(server.next_client_timeout - now);
+        }
     }
 
     for * server.timers {
@@ -1102,7 +1120,7 @@ add_client :: (server: *Http_Server, client_id: Socket.Socket) -> *Http_Client {
     client := table_add(*server.clients, client_id, .{});
     client.client_id = client_id;
 
-    set_timeout(client, 5);
+    set_timeout(server, client, 5);
 
     return client;
 }

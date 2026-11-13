@@ -97,6 +97,9 @@ Http_Server :: struct {
     clients:     Table(Socket.Socket, Http_Client);
     max_clients: int;
 
+    next_client_timeout:     Apollo_Time;
+    has_next_client_timeout: bool;
+
     clients_to_close_in_next_iteration:  [..] Socket.Socket;
 
     events: [..] Http_Event;

@@ -217,7 +217,7 @@ parse_web_socket_frames :: (server: *Http_Server, client_id: Socket.Socket) {
         payload := string.{ data = t, count = payload_length };
         t += payload_length;
 
-        set_timeout(client, 30);
+        set_timeout(server, client, 30);
 
         if opcode == {
             case .PING;
