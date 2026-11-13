@@ -375,7 +375,18 @@ send_response :: (server: *Http_Server, response: Http_Response) {
     push_allocator(context.default_allocator);
 
     client := find_client(server, response.client_id);
-    if client == null return;
+    if client == null {
+        #if OS == .LINUX || OS == .MACOS {
+            if response.file_descriptor != -1 POSIX.close(response.file_descriptor);
+        }
+
+        if response.file.handle {
+            file := response.file;
+            file_close(*file);
+        }
+
+        return;
+    }
 
     status_string := http_response_status_to_string(response.status);
 
