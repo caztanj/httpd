@@ -77,6 +77,32 @@ static_file :: (request: Http_Request, directory: string, directory_is_absolute 
     }
 
     #if OS == .LINUX || OS == .MACOS {
+        relative_uri := trim_left(decoded_uri, "/");
+        if relative_uri.count == 0 relative_uri = "index.html";
+
+        is_single_segment := !contains(relative_uri, "/") && !contains(relative_uri, "\\") && relative_uri != "." && relative_uri != "..";
+        if is_single_segment {
+            candidate_path := join(absolute_directory, "/", relative_uri);
+            fd := POSIX.open(temp_c_string(candidate_path), POSIX.O_RDONLY | POSIX.O_NOFOLLOW);
+            if fd != -1 {
+                stats: POSIX.stat_t;
+                result := POSIX.fstat(fd, *stats);
+                if result == 0 && POSIX.S_ISREG(stats.st_mode) {
+                    file_size := cast(int) stats.st_size;
+
+                    error, range := get_header(request.headers, "Range");
+                    if !error return serve_static_file_range(request, candidate_path, fd, file_size);
+
+                    return serve_entire_static_file(request, candidate_path, fd, file_size);
+                }
+
+                POSIX.close(fd);
+                if result != 0 || !POSIX.S_ISDIR(stats.st_mode) return not_found(request);
+            } else if POSIX.errno() != POSIX.ELOOP {
+                return not_found(request);
+            }
+        }
+
         absolute_path, success := resolve_path(path);
         if !success return not_found(request);
         if !is_inside(absolute_path, absolute_directory) return not_found(request);
@@ -607,6 +633,18 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
 
     client.ssl_read_wants_write = false;
 
+    if client.read_buffer_offset > 0 {
+        if client.read_buffer_offset == client.read_buffer.count {
+            client.read_buffer_offset = 0;
+            client.read_buffer.count  = 0;
+        } else {
+            remaining := client.read_buffer.count - client.read_buffer_offset;
+            memcpy(client.read_buffer.data, client.read_buffer.data + client.read_buffer_offset, remaining);
+            client.read_buffer.count  = remaining;
+            client.read_buffer_offset = 0;
+        }
+    }
+
     while true {
         offset := client.read_buffer.data + client.read_buffer.count;
         max    := client.read_buffer.allocated - client.read_buffer.count;
@@ -882,7 +920,7 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
 
     client.waiting_for_response = false;
 
-    if client.read_buffer.count > 0 && client.type != .SSE && !client.is_in_pending_reads {
+    if client.read_buffer.count - client.read_buffer_offset > 0 && client.type != .SSE && !client.is_in_pending_reads {
         client.is_in_pending_reads = true;
         array_add(*server.clients_with_pending_reads, client.client_id);
     }
@@ -942,6 +980,7 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
 
     if client.type == {
         case .SSE;
+            client.read_buffer_offset = 0;
             array_reset(*client.read_buffer);
             return;
 
@@ -951,10 +990,10 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
 
     }
 
-    if client.waiting_for_response  return;
-    if client.read_buffer.count == 0 return;
+    if client.waiting_for_response                               return;
+    if client.read_buffer.count - client.read_buffer_offset == 0 return;
 
-    client.t     = client.read_buffer.data;
+    client.t     = client.read_buffer.data + client.read_buffer_offset;
     client.max_t = client.read_buffer.data + client.read_buffer.count;
 
     status, request := parse_request(client);
@@ -965,13 +1004,11 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
         return;
     }
 
-    remaining := client.max_t - client.t;
-
-    if remaining > 0 {
-        memcpy(client.read_buffer.data, client.t, remaining);
+    client.read_buffer_offset = client.t - client.read_buffer.data;
+    if client.read_buffer_offset == client.read_buffer.count {
+        client.read_buffer_offset = 0;
+        client.read_buffer.count  = 0;
     }
-
-    client.read_buffer.count = remaining;
 
     client.waiting_for_response = true;
 
@@ -1747,8 +1784,9 @@ Http_Client :: struct {
     t:     *u8;
     max_t: *u8;
 
-    read_buffer: [..] u8;
-    send_buffer: [..] u8;
+    read_buffer:        [..] u8;
+    read_buffer_offset: int;
+    send_buffer:        [..] u8;
     send_buffer_offset: int;
 
     ssl: *LibreSSL.SSL;

@@ -105,7 +105,7 @@ parse_web_socket_frames :: (server: *Http_Server, client_id: Socket.Socket) {
     client := find_client(server, client_id);
     if client == null return;
 
-    t     := client.read_buffer.data;
+    t     := client.read_buffer.data + client.read_buffer_offset;
     max_t := client.read_buffer.data + client.read_buffer.count;
 
     while t + 2 <= max_t {
@@ -285,12 +285,11 @@ parse_web_socket_frames :: (server: *Http_Server, client_id: Socket.Socket) {
         }
     }
 
-    consumed  := t - client.read_buffer.data;
-    remaining := client.read_buffer.count - consumed;
-
-    if remaining > 0 memcpy(client.read_buffer.data, t, remaining);
-
-    client.read_buffer.count = remaining;
+    client.read_buffer_offset = t - client.read_buffer.data;
+    if client.read_buffer_offset == client.read_buffer.count {
+        client.read_buffer_offset = 0;
+        client.read_buffer.count  = 0;
+    }
 }
 
 web_socket_get_accept_key :: (client_key: string) -> string {
