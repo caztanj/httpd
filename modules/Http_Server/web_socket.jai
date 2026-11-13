@@ -74,9 +74,9 @@ web_socket_close :: (server: *Http_Server, client_id: Socket.Socket, code: Web_S
 
     s := string.{ data = payload.data, count = 2 };
 
+    client.close_after_send = true;
     web_socket_write_frame(*client.send_buffer, .CLOSE, s, fin = true);
     send_to_client(server, client_id);
-    close(server, client); // @Todo: Shall this be the close after send?
 }
 
 #scope_module

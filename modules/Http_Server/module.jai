@@ -643,6 +643,11 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
         client.send_file_size   = 0;
     }
 
+    if client.close_after_send {
+        close(server, client);
+        return true;
+    }
+
     if !client.ssl_read_wants_write do_not_notify_when_sendable(server, client);
     set_timeout(client, 30);
 
@@ -1455,6 +1460,8 @@ Http_Client :: struct {
 
     ws_partial_opcode:  u8;
     ws_partial_payload: [..] u8;
+
+    close_after_send: bool;
 }
 
 #insert -> string {
