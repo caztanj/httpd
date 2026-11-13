@@ -1,4 +1,9 @@
 .build
 
+build_release
+build_debug
+
+main
+
 *.exe
 *.pdb
