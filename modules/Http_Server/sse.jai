@@ -20,7 +20,9 @@ sse_init :: (server: *Http_Server, request: Http_Request) -> error: bool {
 
     append_to(*client.send_buffer, HEADERS);
 
-    client.type = .SSE;
+    client.type               = .SSE;
+    client.read_buffer_offset = 0;
+    array_reset(*client.read_buffer);
 
     send_to_client(server, request.client_id);
 

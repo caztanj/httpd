@@ -51,7 +51,7 @@ web_socket_upgrade :: (server: *Http_Server, request: Http_Request) -> error: bo
 
 web_socket_send :: (server: *Http_Server, client_id: Socket.Socket, data: string, opcode: Web_Socket_Opcode = .TEXT) -> error: bool {
     client := find_client(server, client_id);
-    if client == null || client.type != .Web_Socket return true;
+    if client == null || client.type != .Web_Socket || client.close_after_send return true;
 
     web_socket_write_frame(*client.send_buffer, opcode, data, fin = true);
 
@@ -64,7 +64,7 @@ web_socket_send_ping :: (server: *Http_Server, client_id: Socket.Socket) -> erro
 
 web_socket_close :: (server: *Http_Server, client_id: Socket.Socket, code: Web_Socket_Status_Code = .NORMAL_CLOSURE) {
     client := find_client(server, client_id);
-    if client == null return;
+    if client == null || client.close_after_send return;
 
     c := cast(u16) code;
 
@@ -74,7 +74,10 @@ web_socket_close :: (server: *Http_Server, client_id: Socket.Socket, code: Web_S
 
     s := string.{ data = payload.data, count = 2 };
 
-    client.close_after_send = true;
+    client.close_after_send   = true;
+    client.read_buffer_offset = 0;
+    array_reset(*client.read_buffer);
+
     web_socket_write_frame(*client.send_buffer, .CLOSE, s, fin = true);
     send_to_client(server, client_id);
 }
@@ -103,7 +106,7 @@ web_socket_write_frame :: (buffer: *[..] u8, opcode: Web_Socket_Opcode, data: st
 
 parse_web_socket_frames :: (server: *Http_Server, client_id: Socket.Socket) {
     client := find_client(server, client_id);
-    if client == null return;
+    if client == null || client.close_after_send return;
 
     t     := client.read_buffer.data + client.read_buffer_offset;
     max_t := client.read_buffer.data + client.read_buffer.count;
@@ -217,11 +220,14 @@ parse_web_socket_frames :: (server: *Http_Server, client_id: Socket.Socket) {
         payload := string.{ data = t, count = payload_length };
         t += payload_length;
 
+        client.read_buffer_offset = t - client.read_buffer.data;
+
         set_timeout(server, client, 30);
 
         if opcode == {
             case .PING;
-                web_socket_send(server, client_id, payload, .PONG);
+                closed := web_socket_send(server, client_id, payload, .PONG);
+                if closed return;
                 continue;
             case .PONG;
                 continue;

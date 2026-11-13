@@ -989,6 +989,12 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
     client := find_client(server, client_id);
     if client == null return;
 
+    if client.close_after_send {
+        client.read_buffer_offset = 0;
+        array_reset(*client.read_buffer);
+        return;
+    }
+
     if client.type == {
         case .SSE;
             client.read_buffer_offset = 0;
