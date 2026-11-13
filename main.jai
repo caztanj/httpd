@@ -38,7 +38,13 @@ main :: () {
         thread_count := 1;
     }
 
-    arguments.directory = copy_string(get_absolute_path(arguments.directory));
+    absolute_directory, directory_ok := get_absolute_path(arguments.directory);
+    if !directory_ok {
+        log_error("Invalid directory to serve.");
+        exit(.NO_DIRECTORY_TO_SERVE);
+    }
+
+    arguments.directory = copy_string(absolute_directory);
 
     servers = NewArray(thread_count, Http_Server);
 

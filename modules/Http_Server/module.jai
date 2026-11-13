@@ -1497,6 +1497,9 @@ create_ssl_context :: () -> *LibreSSL.SSL_CTX {
         return null;
     }
 
+    mode := LibreSSL.SSL_MODE_ENABLE_PARTIAL_WRITE | LibreSSL.SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER;
+    LibreSSL.SSL_CTX_ctrl(ctx, LibreSSL.SSL_CTRL_MODE, mode, null);
+
     return ctx;
 }
 
