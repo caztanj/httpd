@@ -25,12 +25,29 @@ main :: () {
         arguments.port = ifx arguments.tls then cast(u16) 443 else cast(u16) 80;
     }
 
+    #if OS == .LINUX || OS == .MACOS {
+        if !is_set.threads {
+            arguments.threads = max(1, get_number_of_processors(.ALL_LOGICAL));
+        } else if arguments.threads < 1 {
+            log_error("Number of threads must be at least 1.");
+            exit(.INVALID_THREAD_COUNT);
+        }
+
+        thread_count := arguments.threads;
+    } else {
+        thread_count := 1;
+    }
+
     arguments.directory = copy_string(get_absolute_path(arguments.directory));
 
-    error := init(*server, arguments.port, arguments.address, arguments.tls, arguments.certificate_file, arguments.private_key_file);
-    if error {
-        log_error("Unable to initialize the HTTP server.");
-        exit(.HTTP_SERVER_INITIALIZATION_FAILED);
+    servers = NewArray(thread_count, Http_Server);
+
+    for * servers {
+        error := init(it, arguments.port, arguments.address, arguments.tls, arguments.certificate_file, arguments.private_key_file);
+        if error {
+            log_error("Unable to initialize the HTTP server.");
+            exit(.HTTP_SERVER_INITIALIZATION_FAILED);
+        }
     }
 
     scheme := ifx arguments.tls then "https" else "http";
@@ -40,26 +57,66 @@ main :: () {
         log("Listening on %://%:%", scheme, arguments.address, arguments.port);
     }
 
-    while !quit {
-        push_allocator(temp);
+    #if OS == .LINUX || OS == .MACOS {
+        threads: [] Thread;
+        if thread_count > 1 {
+            threads = NewArray(thread_count - 1, Thread);
 
-        error, events := http_server_poll(*server);
-        if error {
-            log_error("Failed to poll the HTTP server.");
-            exit(.HTTP_SERVER_POLL_FAILED);
+            for * threads {
+                success := thread_init(it, worker_thread);
+                if !success {
+                    log_error("Unable to initialize worker thread.");
+                    exit(.HTTP_SERVER_INITIALIZATION_FAILED);
+                }
+
+                it.data = *servers[it_index + 1];
+                thread_start(it);
+            }
         }
-
-        for events handle_event(it);
-
-        reset_temporary_storage();
     }
 
-    shutdown(*server);
+    event_loop(*servers[0]);
+
+    #if OS == .LINUX || OS == .MACOS {
+        for * threads {
+            thread_is_done(it, -1);
+            thread_deinit(it);
+        }
+
+        array_free(threads);
+    }
+
+    for * servers shutdown(it);
+    array_free(servers);
 
     free(arguments.directory);
     array_free(free_arguments);
 
     #if DEBUG report_memory_leaks();
+}
+
+#if OS == .LINUX || OS == .MACOS {
+    worker_thread :: (thread: *Thread) -> s64 {
+        server := cast(*Http_Server) thread.data;
+        event_loop(server);
+        return 0;
+    }
+}
+
+event_loop :: (server: *Http_Server) {
+    while !quit {
+        push_allocator(temp);
+
+        error, events := http_server_poll(server);
+        if error {
+            log_error("Failed to poll the HTTP server.");
+            exit(.HTTP_SERVER_POLL_FAILED);
+        }
+
+        for events handle_event(server, it);
+
+        reset_temporary_storage();
+    }
 }
 
 logger :: (message: string, data: *void, info: Log_Info) {
@@ -73,7 +130,7 @@ exit :: (code: Exit_Code) {
     exit(cast(s32) code);
 }
 
-handle_event :: (event: Http_Event) {
+handle_event :: (server: *Http_Server, event: Http_Event) {
     if event.type != .Http_Request return;
 
     request := event.http_request;
@@ -85,6 +142,7 @@ handle_event :: (event: Http_Event) {
     #if DEBUG {
         if request.uri == "/stop" {
             quit = true;
+            for * servers wake_up_event_loop(it);
         }
     }
 
@@ -102,7 +160,7 @@ handle_event :: (event: Http_Event) {
     set_header(*response.headers, "Referrer-Policy", "strict-origin-when-cross-origin");
     set_header(*response.headers, "Content-Security-Policy", "script-src 'self'");
 
-    send_response(*server, response);
+    send_response(server, response);
 }
 
 Arguments :: struct {
@@ -115,6 +173,10 @@ Arguments :: struct {
     tls:              bool;
     certificate_file: string;
     private_key_file: string;
+
+    #if OS == .LINUX || OS == .MACOS {
+        threads: int;
+    }
 }
 
 Exit_Code :: enum {
@@ -122,6 +184,7 @@ Exit_Code :: enum {
     FAILED_TO_PARSE_ARGUMENTS;
     NO_DIRECTORY_TO_SERVE;
     MISSING_TLS_ARGUMENTS;
+    INVALID_THREAD_COUNT;
     HTTP_SERVER_INITIALIZATION_FAILED;
     HTTP_SERVER_POLL_FAILED;
 }
@@ -129,7 +192,7 @@ Exit_Code :: enum {
 quit := false;
 
 arguments: Arguments;
-server:    Http_Server;
+servers:   [] Http_Server;
 
 default_logger: Logger;
 
@@ -140,3 +203,8 @@ DEBUG :: false;
 #import "File";
 #import "Http_Server";
 #import "String";
+
+#if OS == .LINUX || OS == .MACOS {
+    #import "System";
+    #import "Thread";
+}
