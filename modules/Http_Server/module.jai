@@ -854,13 +854,15 @@ parse_header :: (using client: *Http_Client) -> Parse_Status, Http_Header {
 
     while t < max_t {
         if t.* == ":" break;
+        if !HEADER_KEY_ALLOWED_CHARS[t.*] return .ERROR, .{};
+
         t += 1;
     }
 
     if t >= max_t return .INCOMPLETE, .{};
 
     header.key.count = t - header.key.data;
-    header.key = trim(header.key, chars=" ");
+    if header.key.count == 0 return .ERROR, .{};
 
     t += 1;
     if t >= max_t return .INCOMPLETE, .{};
@@ -876,11 +878,13 @@ parse_header :: (using client: *Http_Client) -> Parse_Status, Http_Header {
             break;
         }
 
+        if (t.* < 0x20 && t.* != #char "\t") || t.* == 0x7F return .ERROR, .{};
+
         t += 1;
     }
 
     header.value.count = t - header.value.data;
-    header.value = trim(header.value, chars=" \r");
+    header.value = trim(header.value, chars=" \t\r");
 
     t += 1;
     if t >= max_t return .INCOMPLETE, .{};
@@ -1518,11 +1522,19 @@ Http_Client :: struct {
 #no_reset
 URI_ALLOWED_CHARS: [256] bool;
 
+#no_reset
+HEADER_KEY_ALLOWED_CHARS: [256] bool;
+
 #run {
     for #char "a"..#char "z"      URI_ALLOWED_CHARS[it]  = true;
     for #char "A"..#char "Z"      URI_ALLOWED_CHARS[it]  = true;
     for #char "0"..#char "9"      URI_ALLOWED_CHARS[it]  = true;
     for "-._~!$&'()*+,;=:@/?#[]%" URI_ALLOWED_CHARS[it] = true;
+
+    for #char "a"..#char "z" HEADER_KEY_ALLOWED_CHARS[it] = true;
+    for #char "A"..#char "Z" HEADER_KEY_ALLOWED_CHARS[it] = true;
+    for #char "0"..#char "9" HEADER_KEY_ALLOWED_CHARS[it] = true;
+    for "!#$%&'*+-.^_`|~"    HEADER_KEY_ALLOWED_CHARS[it] = true;
 }
 
 #load "router.jai";
