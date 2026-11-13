@@ -1001,13 +1001,20 @@ create_and_bind_listening_socket :: (server: *Http_Server, address: string, port
 
         #if OS == .LINUX || OS == .MACOS {
             options: s32 = 1;
-            if Socket.setsockopt(socket, Socket.SOL_SOCKET, Socket.SO_REUSEPORT, *options, size_of(type_of(options))) == -1 {
+            result := Socket.setsockopt(socket, Socket.SOL_SOCKET, Socket.SO_REUSEPORT, *options, size_of(type_of(options)));
+            if result == -1 {
                 Socket.close_and_reset(*socket);
                 return true;
             }
         }
 
-        if Socket.bind(socket, Socket.ntohl(ipv4), port) != 0 {
+        #if OS == .WINDOWS {
+            result := Socket.bind(socket, Socket.ntohl(ipv4), port);
+        } else {
+            result = Socket.bind(socket, Socket.ntohl(ipv4), port);
+        }
+
+        if result != 0 {
             Socket.close_and_reset(*socket);
             return true;
         }
@@ -1015,15 +1022,24 @@ create_and_bind_listening_socket :: (server: *Http_Server, address: string, port
         socket = Socket.socket(Socket.AF_INET6, .SOCK_STREAM, Socket.IPPROTO.IPPROTO_TCP);
         if socket == Socket.INVALID_SOCKET return true;
 
+        v6_only: s32 = 0;
+        result := Socket.setsockopt(socket, xx Socket.IPPROTO.IPPROTO_IPV6, Socket.IPV6_V6ONLY, xx *v6_only, size_of(type_of(v6_only)));
+        if result == -1 {
+            Socket.close_and_reset(*socket);
+            return true;
+        }
+
         #if OS == .LINUX || OS == .MACOS {
             options: s32 = 1;
-            if Socket.setsockopt(socket, Socket.SOL_SOCKET, Socket.SO_REUSEPORT, *options, size_of(type_of(options))) == -1 {
+            result = Socket.setsockopt(socket, Socket.SOL_SOCKET, Socket.SO_REUSEPORT, *options, size_of(type_of(options)));
+            if result == -1 {
                 Socket.close_and_reset(*socket);
                 return true;
             }
         }
 
-        if Socket.bind(socket, ipv6, port) != 0 {
+        result = Socket.bind(socket, ipv6, port);
+        if result != 0 {
             Socket.close_and_reset(*socket);
             return true;
         }
@@ -1031,12 +1047,14 @@ create_and_bind_listening_socket :: (server: *Http_Server, address: string, port
         return true;
     }
 
-    if Socket.listen(socket, Socket.SOMAXCONN) != 0 {
+    result := Socket.listen(socket, Socket.SOMAXCONN);
+    if result != 0 {
         Socket.close_and_reset(*socket);
         return true;
     }
 
-    if !Socket.set_blocking(socket, false) {
+    success := Socket.set_blocking(socket, false);
+    if !success {
         Socket.close_and_reset(*socket);
         return true;
     }
@@ -1050,7 +1068,8 @@ create_wake_up_socket :: (server: *Http_Server) -> error: bool {
     socket := Socket.socket(Socket.AF_INET, .SOCK_DGRAM, 0);
     if socket == Socket.INVALID_SOCKET return true;
 
-    if Socket.bind(socket, 0x7F000001, 0) != 0 {
+    result := Socket.bind(socket, 0x7F000001, 0);
+    if result != 0 {
         Socket.close_and_reset(*socket);
         return true;
     }
@@ -1062,12 +1081,14 @@ create_wake_up_socket :: (server: *Http_Server) -> error: bool {
         addr_size: u32 = size_of(type_of(addr));
     }
 
-    if Socket.getsockname(socket, cast(*Socket.sockaddr)*addr, *addr_size) != 0 {
+    result = Socket.getsockname(socket, cast(*Socket.sockaddr)*addr, *addr_size);
+    if result != 0 {
         Socket.close_and_reset(*socket);
         return true;
     }
 
-    if !Socket.set_blocking(socket, false) {
+    success := Socket.set_blocking(socket, false);
+    if !success {
         Socket.close_and_reset(*socket);
         return true;
     }
