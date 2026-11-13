@@ -68,19 +68,6 @@ static_file :: (request: Http_Request, directory: string, directory_is_absolute 
 
     path := join(absolute_directory, "/", decoded_uri);
 
-    path_is_directory, success := is_directory(path);
-    if !success return not_found(request);
-
-    if path_is_directory {
-        index_path := tprint("%/index.html", path);
-        if file_exists(index_path) path = index_path;
-        else                       return not_found(request);
-    }
-
-    absolute_path: string;
-    absolute_path, success = resolve_path(path);
-    if !success return not_found(request);
-
     is_inside :: (path: string, directory: string) -> bool {
         if !starts_with(path, directory)                           return false;
         if path.count == directory.count                           return true;
@@ -89,12 +76,69 @@ static_file :: (request: Http_Request, directory: string, directory_is_absolute 
         return path[directory.count] == "/" || path[directory.count] == "\\";
     }
 
-    if !is_inside(absolute_path, absolute_directory) return not_found(request);
+    #if OS == .LINUX || OS == .MACOS {
+        absolute_path, success := resolve_path(path);
+        if !success return not_found(request);
+        if !is_inside(absolute_path, absolute_directory) return not_found(request);
 
-    error, range := get_header(request.headers, "Range");
-    if !error return serve_static_file_range(request, absolute_path);
+        fd := POSIX.open(temp_c_string(absolute_path), POSIX.O_RDONLY);
+        if fd == -1 return not_found(request);
 
-    return serve_entire_static_file(request, absolute_path);
+        stats: POSIX.stat_t;
+        result := POSIX.fstat(fd, *stats);
+        if result != 0 {
+            POSIX.close(fd);
+            return not_found(request);
+        }
+
+        if POSIX.S_ISDIR(stats.st_mode) {
+            POSIX.close(fd);
+
+            index_path := tprint("%/index.html", absolute_path);
+            absolute_path, success = resolve_path(index_path);
+            if !success return not_found(request);
+            if !is_inside(absolute_path, absolute_directory) return not_found(request);
+
+            fd = POSIX.open(temp_c_string(absolute_path), POSIX.O_RDONLY);
+            if fd == -1 return not_found(request);
+
+            result = POSIX.fstat(fd, *stats);
+            if result != 0 || !POSIX.S_ISREG(stats.st_mode) {
+                POSIX.close(fd);
+                return not_found(request);
+            }
+        } else if !POSIX.S_ISREG(stats.st_mode) {
+            POSIX.close(fd);
+            return not_found(request);
+        }
+
+        file_size := cast(int) stats.st_size;
+
+        error, range := get_header(request.headers, "Range");
+        if !error return serve_static_file_range(request, absolute_path, fd, file_size);
+
+        return serve_entire_static_file(request, absolute_path, fd, file_size);
+    } else {
+        path_is_directory, success := is_directory(path);
+        if !success return not_found(request);
+
+        if path_is_directory {
+            index_path := tprint("%/index.html", path);
+            if file_exists(index_path) path = index_path;
+            else                       return not_found(request);
+        }
+
+        absolute_path: string;
+        absolute_path, success = resolve_path(path);
+        if !success return not_found(request);
+
+        if !is_inside(absolute_path, absolute_directory) return not_found(request);
+
+        error, range := get_header(request.headers, "Range");
+        if !error return serve_static_file_range(request, absolute_path);
+
+        return serve_entire_static_file(request, absolute_path);
+    }
 }
 
 text :: (request: Http_Request, text: string, content_type := "text/plain") -> Http_Response {
@@ -339,7 +383,24 @@ send_response :: (server: *Http_Server, response: Http_Response) {
     append_to_send_buffer(*client.send_buffer, "\r\n");
     append_to_send_buffer(*client.send_buffer, response.body);
 
-    if response.file.handle {
+    if response.file_descriptor != -1 {
+        #if OS == .LINUX || OS == .MACOS {
+            if client.send_file_descriptor != -1 POSIX.close(client.send_file_descriptor);
+        }
+
+        if client.send_file.handle file_close(*client.send_file);
+
+        client.send_file_descriptor = response.file_descriptor;
+        client.send_file_offset     = response.file_offset;
+        client.send_file_end        = response.file_offset + response.file_size;
+    } else if response.file.handle {
+        #if OS == .LINUX || OS == .MACOS {
+            if client.send_file_descriptor != -1 {
+                POSIX.close(client.send_file_descriptor);
+                client.send_file_descriptor = -1;
+            }
+        }
+
         if client.send_file.handle file_close(*client.send_file);
 
         client.send_file        = response.file;
@@ -428,9 +489,10 @@ Http_Response :: struct {
 
     body: string;
 
-    file:        File;
-    file_offset: int;
-    file_size:   int = -1;
+    file:            File;
+    file_descriptor: s32 = -1;
+    file_offset:     int;
+    file_size:       int = -1;
 }
 
 Http_Method :: enum {
@@ -642,8 +704,17 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
 
     client.ssl_write_wants_read = false;
 
+    has_file := (client.send_file_descriptor != -1 || client.send_file.handle != null) && client.send_file_offset < client.send_file_end;
+
+    send_flags: s32 = 0;
+    #if OS == .LINUX {
+        if !server.tls && has_file {
+            send_flags = cast(s32) Socket.MSG.MORE;
+        }
+    }
+
     while client.send_buffer.count - client.send_buffer_offset > 0 {
-        bytes_sent := send(server, client, client.send_buffer.data + client.send_buffer_offset, client.send_buffer.count - client.send_buffer_offset);
+        bytes_sent := send(server, client, client.send_buffer.data + client.send_buffer_offset, client.send_buffer.count - client.send_buffer_offset, send_flags);
         if bytes_sent == -1 {
             return handle_send_failure(server, client, bytes_sent);
         }
@@ -661,10 +732,10 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
         client.send_buffer_offset = 0;
     }
 
-    if client.send_file.handle {
+    if client.send_file_descriptor != -1 || client.send_file.handle != null {
         #if OS == .LINUX {
             if !server.tls {
-                file_fd := POSIX.fileno(client.send_file.handle);
+                file_fd := ifx client.send_file_descriptor != -1 then client.send_file_descriptor else POSIX.fileno(client.send_file.handle);
 
                 while client.send_file_offset < client.send_file_end {
                     remaining := client.send_file_end - client.send_file_offset;
@@ -686,14 +757,19 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
                     }
                 }
 
-                file_close(*client.send_file);
+                if client.send_file_descriptor != -1 {
+                    POSIX.close(client.send_file_descriptor);
+                    client.send_file_descriptor = -1;
+                }
+
+                if client.send_file.handle file_close(*client.send_file);
 
                 client.send_file_offset = 0;
                 client.send_file_end    = 0;
             }
         } else #if OS == .MACOS {
             if !server.tls {
-                file_fd := POSIX.fileno(client.send_file.handle);
+                file_fd := ifx client.send_file_descriptor != -1 then client.send_file_descriptor else POSIX.fileno(client.send_file.handle);
 
                 while client.send_file_offset < client.send_file_end {
                     remaining := client.send_file_end - client.send_file_offset;
@@ -709,7 +785,47 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
                     if bytes_sent == 0 break;
                 }
 
-                file_close(*client.send_file);
+                if client.send_file_descriptor != -1 {
+                    POSIX.close(client.send_file_descriptor);
+                    client.send_file_descriptor = -1;
+                }
+
+                if client.send_file.handle file_close(*client.send_file);
+
+                client.send_file_offset = 0;
+                client.send_file_end    = 0;
+            }
+        }
+
+        if client.send_file_descriptor != -1 {
+            #if OS == .LINUX || OS == .MACOS {
+                buffer: [32768] u8;
+
+                while client.send_file_offset < client.send_file_end {
+                    to_read := min(client.send_file_end - client.send_file_offset, buffer.count);
+
+                    bytes_read := POSIX.pread(client.send_file_descriptor, buffer.data, xx to_read, client.send_file_offset);
+                    if bytes_read <= 0 {
+                        close(server, client);
+                        return true;
+                    }
+
+                    remaining_data  := buffer.data;
+                    remaining_count := bytes_read;
+                    while remaining_count > 0 {
+                        bytes_sent := send(server, client, remaining_data, remaining_count);
+                        if bytes_sent == -1 {
+                            return handle_send_failure(server, client, bytes_sent);
+                        }
+
+                        client.send_file_offset += bytes_sent;
+                        remaining_data          += bytes_sent;
+                        remaining_count         -= bytes_sent;
+                    }
+                }
+
+                POSIX.close(client.send_file_descriptor);
+                client.send_file_descriptor = -1;
 
                 client.send_file_offset = 0;
                 client.send_file_end    = 0;
@@ -812,12 +928,12 @@ recv :: (server: *Http_Server, client: *Http_Client, buffer: *u8, size: int) -> 
     return Socket.recv(client.client_id, buffer, xx size, 0);
 }
 
-send :: (server: *Http_Server, client: *Http_Client, buffer: *u8, size: int) -> int {
+send :: (server: *Http_Server, client: *Http_Client, buffer: *u8, size: int, flags: s32 = 0) -> int {
     if server.tls {
         return LibreSSL.SSL_write(client.ssl, buffer, xx size);
     }
 
-    return Socket.send(client.client_id, buffer, xx size, 0);
+    return Socket.send(client.client_id, buffer, xx size, xx flags);
 }
 
 parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
@@ -1137,7 +1253,8 @@ close :: (server: *Http_Server, client: *Http_Client, now := false) {
 
 add_client :: (server: *Http_Server, client_id: Socket.Socket) -> *Http_Client {
     client := table_add(*server.clients, client_id, .{});
-    client.client_id = client_id;
+    client.client_id            = client_id;
+    client.send_file_descriptor = -1;
 
     set_timeout(server, client, 5);
 
@@ -1165,6 +1282,10 @@ remove_client :: (server: *Http_Server, client: *Http_Client) {
     array_reset(*client.read_buffer);
     array_reset(*client.send_buffer);
     array_reset(*client.ws_partial_payload);
+
+    #if OS == .LINUX || OS == .MACOS {
+        if client.send_file_descriptor != -1 POSIX.close(client.send_file_descriptor);
+    }
 
     if client.send_file.handle file_close(*client.send_file);
 
@@ -1427,7 +1548,7 @@ parse_range :: (header: string) -> error: bool, start: int, end: int {
     return false, start_int, end_int;
 }
 
-serve_entire_static_file :: (request: Http_Request, path: string) -> Http_Response {
+serve_entire_static_file :: (request: Http_Request, path: string, file_descriptor: s32 = -1, known_file_size := -1) -> Http_Response {
     response: Http_Response;
     response.client_id = request.client_id;
     response.status    = .OK;
@@ -1437,15 +1558,31 @@ serve_entire_static_file :: (request: Http_Request, path: string) -> Http_Respon
     content_type := get_content_type_from_extension(path);
     set_header(*response.headers, "Content-Type", content_type);
 
-    file, success := file_open(path);
-    if !success return internal_server_error(request);
+    length := known_file_size;
 
-    response.file = file;
+    if file_descriptor != -1 {
+        if length == 0 {
+            #if OS == .LINUX || OS == .MACOS {
+                POSIX.close(file_descriptor);
+            }
+        } else {
+            response.file_descriptor = file_descriptor;
+        }
+    } else {
+        file, success := file_open(path);
+        if !success return internal_server_error(request);
 
-    length:, success = file_length(file);
-    if !success {
-        file_close(*file);
-        return internal_server_error(request);
+        length, success = file_length(file);
+        if !success {
+            file_close(*file);
+            return internal_server_error(request);
+        }
+
+        if length == 0 {
+            file_close(*file);
+        } else {
+            response.file = file;
+        }
     }
 
     response.file_offset = 0;
@@ -1456,7 +1593,15 @@ serve_entire_static_file :: (request: Http_Request, path: string) -> Http_Respon
     return response;
 }
 
-serve_static_file_range :: (request: Http_Request, path: string) -> Http_Response {
+serve_static_file_range :: (request: Http_Request, path: string, file_descriptor: s32 = -1, known_file_size := -1) -> Http_Response {
+    close_file :: (file_descriptor: s32, file: *File) {
+        #if OS == .LINUX || OS == .MACOS {
+            if file_descriptor != -1 POSIX.close(file_descriptor);
+        }
+
+        if file.handle file_close(file);
+    }
+
     response: Http_Response;
     response.client_id = request.client_id;
     response.status    = .PARTIAL_CONTENT;
@@ -1464,24 +1609,36 @@ serve_static_file_range :: (request: Http_Request, path: string) -> Http_Respons
     content_type := get_content_type_from_extension(path);
     set_header(*response.headers, "Content-Type", content_type);
 
+    file: File;
+    length := known_file_size;
+
+    if file_descriptor == -1 {
+        success: bool;
+        file, success = file_open(path);
+        if !success return internal_server_error(request);
+
+        length, success = file_length(file);
+        if !success {
+            file_close(*file);
+            return internal_server_error(request);
+        }
+    }
+
     error, range := get_header(request.headers, "Range");
-    if error return internal_server_error(request);
+    if error {
+        close_file(file_descriptor, *file);
+        return internal_server_error(request);
+    }
 
     error=, start, end := parse_range(range);
-    if error return bad_request(request);
-
-    file, success := file_open(path);
-    if !success return internal_server_error(request);
-
-    length:, success = file_length(file);
-    if !success {
-        file_close(*file);
-        return internal_server_error(request);
+    if error {
+        close_file(file_descriptor, *file);
+        return bad_request(request);
     }
 
     if start == -1 {
         if end <= 0 {
-            file_close(*file);
+            close_file(file_descriptor, *file);
             return bad_request(request);
         }
         start = length - end;
@@ -1490,7 +1647,7 @@ serve_static_file_range :: (request: Http_Request, path: string) -> Http_Respons
     }
 
     if start >= length {
-        file_close(*file);
+        close_file(file_descriptor, *file);
         response.status = .RANGE_NOT_SATISFIABLE;
         set_header(*response.headers, "Content-Range", tprint("bytes */%", length));
         return response;
@@ -1502,7 +1659,7 @@ serve_static_file_range :: (request: Http_Request, path: string) -> Http_Respons
 
     if end >= length end = length - 1;
     if start > end {
-        file_close(*file);
+        close_file(file_descriptor, *file);
         return bad_request(request);
     }
 
@@ -1512,9 +1669,10 @@ serve_static_file_range :: (request: Http_Request, path: string) -> Http_Respons
 
     count := end - start + 1;
 
-    response.file        = file;
-    response.file_offset = start;
-    response.file_size   = count;
+    response.file            = file;
+    response.file_descriptor = file_descriptor;
+    response.file_offset     = start;
+    response.file_size       = count;
 
     set_header(*response.headers, "Content-Length", tprint("%", count));
     set_header(*response.headers, "Content-Range", tprint("bytes %-%/%", start, end, length));
@@ -1597,9 +1755,10 @@ Http_Client :: struct {
     ssl_read_wants_write: bool;
     ssl_write_wants_read: bool;
 
-    send_file:        File;
-    send_file_offset: int;
-    send_file_end:    int;
+    send_file:            File;
+    send_file_descriptor: s32 = -1;
+    send_file_offset:     int;
+    send_file_end:        int;
 
     ws_partial_opcode:  u8;
     ws_partial_payload: [..] u8;

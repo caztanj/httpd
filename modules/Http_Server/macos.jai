@@ -59,6 +59,11 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
 
     array_reset_keeping_memory(*server.clients_with_pending_reads);
 
+    if server.events.count > 0 && !peek {
+        for server.clients_to_close_in_next_iteration array_add(*server.events, .{ type = .Client_Closed, client_closed = it });
+        return false, server.events;
+    }
+
     timeout := process_timeouts_and_get_next_timeout(server);
 
     if peek || server.events.count > 0 timeout = 0;
