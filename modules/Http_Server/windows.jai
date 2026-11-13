@@ -1,4 +1,4 @@
-init :: (server: *Http_Server, port: u16, address := "127.0.0.1", tls := false, certificate_file := "", private_key_file := "") -> error: bool {
+init :: (server: *Http_Server, port: u16, address := "127.0.0.1", tls := false, certificate_file := "", private_key_file := "", threads := 1) -> error: bool {
     Socket.socket_init();
 
     error := create_and_bind_listening_socket(server, address, port);
@@ -22,7 +22,7 @@ init :: (server: *Http_Server, port: u16, address := "127.0.0.1", tls := false, 
 
     array_add(*server.wsapollfds, wsapollfd_wake_up);
 
-    configure_max_clients(server);
+    configure_max_clients(server, threads);
 
     server.tls = tls;
     return false;
@@ -49,11 +49,6 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
     }
 
     array_reset_keeping_memory(*server.clients_with_pending_reads);
-
-    if server.events.count > 0 && !peek {
-        for server.clients_to_close_in_next_iteration array_add(*server.events, .{ type = .Client_Closed, client_closed = it });
-        return false, server.events;
-    }
 
     timeout := process_timeouts_and_get_next_timeout(server);
     if peek || server.events.count > 0 timeout = 0;

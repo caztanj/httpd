@@ -43,7 +43,7 @@ main :: () {
     servers = NewArray(thread_count, Http_Server);
 
     for * servers {
-        error := init(it, arguments.port, arguments.address, arguments.tls, arguments.certificate_file, arguments.private_key_file);
+        error := init(it, arguments.port, arguments.address, arguments.tls, arguments.certificate_file, arguments.private_key_file, thread_count);
         if error {
             log_error("Unable to initialize the HTTP server.");
             exit(.HTTP_SERVER_INITIALIZATION_FAILED);

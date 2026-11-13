@@ -1445,7 +1445,9 @@ create_wake_up_socket :: (server: *Http_Server) -> error: bool {
     return false;
 }
 
-configure_max_clients :: (server: *Http_Server) {
+configure_max_clients :: (server: *Http_Server, threads := 1) {
+    thread_count := max(1, threads);
+
     #if OS == .LINUX || OS == .MACOS {
         limit: POSIX.rlimit;
         result := POSIX.getrlimit(.RLIMIT_NOFILE, *limit);
@@ -1456,16 +1458,18 @@ configure_max_clients :: (server: *Http_Server) {
             result = POSIX.setrlimit(.RLIMIT_NOFILE, *limit);
             if result == 0 active_limit = limit.rlim_cur;
 
-            fd_max := (cast(int) active_limit - 32) / 2;
+            reserved_fds := 32 + thread_count * 3;
+            fd_max := (cast(int) active_limit - reserved_fds) / (2 * thread_count);
             if fd_max < 1 fd_max = 1;
 
-            if MAX_CLIENTS > 0 server.max_clients = min(MAX_CLIENTS, fd_max);
+            if MAX_CLIENTS > 0 server.max_clients = min(max(1, MAX_CLIENTS / thread_count), fd_max);
             else               server.max_clients = fd_max;
             return;
         }
     }
 
-    server.max_clients = MAX_CLIENTS;
+    if MAX_CLIENTS > 0 server.max_clients = max(1, MAX_CLIENTS / thread_count);
+    else               server.max_clients = 0;
 }
 
 create_ssl_context :: () -> *LibreSSL.SSL_CTX {
