@@ -418,8 +418,19 @@ accept_clients :: (server: *Http_Server) {
 
         client := add_client(server, client_socket);
 
+        success := Socket.set_blocking(client_socket, false);
+        if !success {
+            close(server, client);
+            continue;
+        }
+
         if server.tls {
             client.ssl = LibreSSL.SSL_new(server.ssl_ctx);
+            if !client.ssl {
+                print_ssl_errors();
+                close(server, client);
+                continue;
+            }
 
             LibreSSL.SSL_set_fd(client.ssl, xx client_socket);
 
@@ -432,12 +443,6 @@ accept_clients :: (server: *Http_Server) {
                     continue;
                 }
             }
-        }
-
-        success := Socket.set_blocking(client_socket, false);
-        if !success {
-            close(server, client);
-            continue;
         }
 
         error := add_to_queue(server, client);
