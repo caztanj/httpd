@@ -153,6 +153,8 @@ add_to_queue :: (server: *Http_Server, client: *Http_Client) -> error: bool {
 }
 
 notify_when_sendable :: (server: *Http_Server, client: *Http_Client) -> error: bool {
+    if client.is_notifying_when_sendable return false;
+
     event: Macos.Kevent64;
     event.ident = xx client.client_id;
     event.filter = .WRITE;
@@ -160,16 +162,22 @@ notify_when_sendable :: (server: *Http_Server, client: *Http_Client) -> error: b
 
     array_add(*server.kqueue_changes, event);
 
+    client.is_notifying_when_sendable = true;
+
     return false;
 }
 
 do_not_notify_when_sendable :: (server: *Http_Server, client: *Http_Client) -> error: bool {
+    if !client.is_notifying_when_sendable return false;
+
     event: Macos.Kevent64;
     event.ident = xx client.client_id;
     event.filter = .WRITE;
     event.flags = .DELETE;
 
     array_add(*server.kqueue_changes, event);
+
+    client.is_notifying_when_sendable = false;
 
     return false;
 }

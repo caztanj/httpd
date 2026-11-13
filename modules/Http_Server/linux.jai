@@ -137,6 +137,8 @@ add_to_queue :: (server: *Http_Server, client: *Http_Client) -> error: bool {
 }
 
 notify_when_sendable :: (server: *Http_Server, client: *Http_Client) -> error: bool {
+    if client.is_notifying_when_sendable return false;
+
     event: Linux.epoll_event;
     event.events = Linux.EPOLLET | Linux.EPOLLIN | Linux.EPOLLOUT;
     event.data.fd = client.client_id;
@@ -144,16 +146,22 @@ notify_when_sendable :: (server: *Http_Server, client: *Http_Client) -> error: b
     result := Linux.epoll_ctl(server.epoll_queue, .MOD, client.client_id, *event);
     if result == -1 return true;
 
+    client.is_notifying_when_sendable = true;
+
     return false;
 }
 
 do_not_notify_when_sendable :: (server: *Http_Server, client: *Http_Client) -> error: bool {
+    if !client.is_notifying_when_sendable return false;
+
     event: Linux.epoll_event;
     event.events = Linux.EPOLLET | Linux.EPOLLIN;
     event.data.fd = client.client_id;
 
     result := Linux.epoll_ctl(server.epoll_queue, .MOD, client.client_id, *event);
     if result == -1 return true;
+
+    client.is_notifying_when_sendable = false;
 
     return false;
 }

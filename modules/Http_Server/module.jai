@@ -1463,7 +1463,8 @@ Http_Client :: struct {
     ws_partial_opcode:  u8;
     ws_partial_payload: [..] u8;
 
-    close_after_send: bool;
+    close_after_send:           bool;
+    is_notifying_when_sendable: bool;
 }
 
 #insert -> string {
