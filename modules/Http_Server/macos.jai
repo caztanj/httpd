@@ -49,6 +49,16 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
 
     array_reset(*server.clients_to_close_in_next_iteration);
 
+    for server.clients_with_pending_reads {
+        client := find_client(server, it);
+        if client {
+            client.is_in_pending_reads = false;
+            parse_requests(server, it);
+        }
+    }
+
+    array_reset_keeping_memory(*server.clients_with_pending_reads);
+
     timeout := process_timeouts_and_get_next_timeout(server);
 
     if peek || server.events.count > 0 timeout = 0;
@@ -126,6 +136,7 @@ Http_Server :: struct {
     has_next_client_timeout: bool;
 
     clients_to_close_in_next_iteration: [..] Socket.Socket;
+    clients_with_pending_reads:         [..] Socket.Socket;
 
     events: [..] Http_Event;
     events.allocator = temp;

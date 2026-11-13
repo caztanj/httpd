@@ -358,6 +358,7 @@ shutdown :: (server: *Http_Server) {
     deinit(*server.clients);
 
     array_reset(*server.clients_to_close_in_next_iteration);
+    array_reset(*server.clients_with_pending_reads);
 
     if server.tls {
         LibreSSL.SSL_CTX_free(server.ssl_ctx);
@@ -763,6 +764,13 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
     if !client.ssl_read_wants_write do_not_notify_when_sendable(server, client);
     set_timeout(server, client, 30);
 
+    client.waiting_for_response = false;
+
+    if client.read_buffer.count > 0 && client.type != .SSE && !client.is_in_pending_reads {
+        client.is_in_pending_reads = true;
+        array_add(*server.clients_with_pending_reads, client.client_id);
+    }
+
     return false;
 }
 
@@ -827,34 +835,35 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
 
     }
 
+    if client.waiting_for_response  return;
+    if client.read_buffer.count == 0 return;
+
     client.t     = client.read_buffer.data;
     client.max_t = client.read_buffer.data + client.read_buffer.count;
 
-    while client.t < client.max_t {
-        t := client.t;
-
-        status, request := parse_request(client);
-        if status == .ERROR {
-            close(server, client);
-            return;
-        } else if status == .INCOMPLETE {
-            count := client.max_t - t;
-            if t != client.read_buffer.data {
-                memcpy(client.read_buffer.data, t, count);
-            }
-            client.read_buffer.count = count;
-
-            return;
-        }
-
-        request.client_id = client_id;
-
-        set_timeout(server, client, 30);
-
-        array_add(*server.events, .{ type = .Http_Request, http_request = request });
+    status, request := parse_request(client);
+    if status == .ERROR {
+        close(server, client);
+        return;
+    } else if status == .INCOMPLETE {
+        return;
     }
 
-    client.read_buffer.count = 0;
+    remaining := client.max_t - client.t;
+
+    if remaining > 0 {
+        memcpy(client.read_buffer.data, client.t, remaining);
+    }
+
+    client.read_buffer.count = remaining;
+
+    client.waiting_for_response = true;
+
+    request.client_id = client_id;
+
+    set_timeout(server, client, 30);
+
+    array_add(*server.events, .{ type = .Http_Request, http_request = request });
 }
 
 parse_request :: (using client: *Http_Client) -> Parse_Status, Http_Request {
@@ -1597,6 +1606,8 @@ Http_Client :: struct {
 
     close_after_send:           bool;
     is_notifying_when_sendable: bool;
+    waiting_for_response:       bool;
+    is_in_pending_reads:        bool;
 }
 
 #insert -> string {
