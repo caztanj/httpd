@@ -550,6 +550,8 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
             close(server, client);
             return true;
         }
+
+        if !server.tls && bytes_read < max break;
     }
 
     return false;
