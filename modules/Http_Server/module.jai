@@ -1,7 +1,11 @@
-#module_parameters () (MAX_REQUEST_SIZE := 65536, MAX_WEB_SOCKET_MESSAGE_SIZE := 16_777_216);
+#module_parameters () (MAX_REQUEST_SIZE := 65536, MAX_WEB_SOCKET_MESSAGE_SIZE := 16_777_216, MAX_SEND_BUFFER_SIZE := 16_777_216, MAX_CLIENTS := 0);
 
-// @Todo: I think a client can open however many connections it wants and we just accept them all. We should have a max N number of connections per client.
-// @Todo: A client can send one byte every 30 seconds to keep a connection open for a very long time. Maybe we should just give the client 30 seconds to send all data and close the connection otherwise?
+// @Note: If MAX_SEND_BUFFER_SIZE is set to 0 the max value will be infinite.
+
+// @Note: If MAX_CLIENTS is set to 0 the max value will be:
+//        Windows: Infinite
+//        macOS:   (RLIMIT_NOFILE - 32) / 2
+//        Linux:   (RLIMIT_NOFILE - 32) / 2
 
 get_header :: (headers: [] Http_Header, key: string) -> error: bool, string {
     for headers {
@@ -432,6 +436,11 @@ accept_clients :: (server: *Http_Server) {
             continue;
         }
 
+        if server.max_clients > 0 && server.clients.count >= server.max_clients {
+            Socket.close_and_reset(*client_socket);
+            continue;
+        }
+
         client := add_client(server, client_socket);
 
         success := Socket.set_blocking(client_socket, false);
@@ -502,7 +511,6 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
                     case LibreSSL.SSL_ERROR_WANT_WRITE;
                         client.ssl_read_wants_write = true;
                         notify_when_sendable(server, client);
-                        set_timeout(client, 30);
                         return false;
                 }
             }
@@ -511,8 +519,6 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
                 close(server, client);
                 return true;
             }
-
-            set_timeout(client, 30);
 
             return false;
         }
@@ -524,7 +530,8 @@ read_from_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: 
 
         client.read_buffer.count += bytes_read;
 
-        if client.type != .Web_Socket && client.read_buffer.count >= MAX_REQUEST_SIZE {
+        max_read_size := ifx client.type == .Web_Socket then MAX_WEB_SOCKET_MESSAGE_SIZE + 14 else MAX_REQUEST_SIZE;
+        if client.read_buffer.count >= max_read_size {
             close(server, client);
             return true;
         }
@@ -567,6 +574,11 @@ handle_send_failure :: (server: *Http_Server, client: *Http_Client, bytes_sent: 
 send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bool {
     client := find_client(server, client_id);
     if client == null return true;
+
+    if MAX_SEND_BUFFER_SIZE > 0 && client.send_buffer.count - client.send_buffer_offset > MAX_SEND_BUFFER_SIZE {
+        close(server, client);
+        return true;
+    }
 
     client.ssl_write_wants_read = false;
 
@@ -702,6 +714,8 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
         }
 
         request.client_id = client_id;
+
+        set_timeout(client, 30);
 
         array_add(*server.events, .{ type = .Http_Request, http_request = request });
     }
@@ -1097,6 +1111,29 @@ create_wake_up_socket :: (server: *Http_Server) -> error: bool {
     server.wake_up_port   = Socket.ntohs(addr.sin_port);
 
     return false;
+}
+
+configure_max_clients :: (server: *Http_Server) {
+    #if OS == .LINUX || OS == .MACOS {
+        limit: POSIX.rlimit;
+        result := POSIX.getrlimit(.RLIMIT_NOFILE, *limit);
+        if result == 0 {
+            active_limit := limit.rlim_cur;
+
+            limit.rlim_cur = limit.rlim_max;
+            result = POSIX.setrlimit(.RLIMIT_NOFILE, *limit);
+            if result == 0 active_limit = limit.rlim_cur;
+
+            fd_max := (cast(int) active_limit - 32) / 2;
+            if fd_max < 1 fd_max = 1;
+
+            if MAX_CLIENTS > 0 server.max_clients = min(MAX_CLIENTS, fd_max);
+            else               server.max_clients = fd_max;
+            return;
+        }
+    }
+
+    server.max_clients = MAX_CLIENTS;
 }
 
 create_ssl_context :: () -> *LibreSSL.SSL_CTX {

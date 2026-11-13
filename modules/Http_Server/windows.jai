@@ -22,6 +22,8 @@ init :: (server: *Http_Server, port: u16, address := "127.0.0.1", tls := false, 
 
     array_add(*server.wsapollfds, wsapollfd_wake_up);
 
+    configure_max_clients(server);
+
     server.tls = tls;
     return false;
 }
@@ -92,7 +94,8 @@ http_server_poll :: (server: *Http_Server, peek := false) -> error: bool, [] Htt
 Http_Server :: struct {
     listening_socket: Socket.Socket;
 
-    clients: Table(Socket.Socket, Http_Client);
+    clients:     Table(Socket.Socket, Http_Client);
+    max_clients: int;
 
     clients_to_close_in_next_iteration:  [..] Socket.Socket;
 

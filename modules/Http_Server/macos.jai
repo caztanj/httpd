@@ -30,6 +30,8 @@ init :: (server: *Http_Server, port: u16, address := "127.0.0.1", tls := false, 
 
     array_add(*server.kqueue_changes, wake_up_event);
 
+    configure_max_clients(server);
+
     server.tls = tls;
 
     return false;
@@ -117,7 +119,8 @@ Http_Server :: struct {
     kqueue:           s32;
     listening_socket: Socket.Socket;
 
-    clients: Table(Socket.Socket, Http_Client);
+    clients:     Table(Socket.Socket, Http_Client);
+    max_clients: int;
 
     clients_to_close_in_next_iteration: [..] Socket.Socket;
 
