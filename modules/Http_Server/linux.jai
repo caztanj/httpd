@@ -165,3 +165,9 @@ do_not_notify_when_sendable :: (server: *Http_Server, client: *Http_Client) -> e
 
     return false;
 }
+
+linux_sendfile :: (out_fd: s32, in_fd: s32, offset: *s64, count: u64) -> s64 #foreign libc "sendfile";
+
+#scope_file
+
+libc :: #system_library "libc";

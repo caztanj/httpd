@@ -312,9 +312,11 @@ send_response :: (server: *Http_Server, response: Http_Response) {
     }
 
     if response.file.handle {
+        if client.send_file.handle file_close(*client.send_file);
+
         client.send_file        = response.file;
-        client.send_file_offset = 0;
-        client.send_file_size   = file_length(client.send_file);
+        client.send_file_offset = response.file_offset;
+        client.send_file_end    = ifx response.file_size > 0 || response.file_offset > 0 then response.file_offset + response.file_size else file_length(client.send_file);
     }
 
     send_to_client(server, response.client_id);
@@ -397,7 +399,9 @@ Http_Response :: struct {
 
     body: string;
 
-    file: File;
+    file:        File;
+    file_offset: int;
+    file_size:   int;
 }
 
 Http_Method :: enum {
@@ -619,30 +623,98 @@ send_to_client :: (server: *Http_Server, client_id: Socket.Socket) -> closed: bo
     }
 
     if client.send_file.handle {
-        while client.send_file_offset < client.send_file_size {
-            error, content := read_part_of_file(client.send_file, client.send_file_offset, kilobytes(32),, temp);
-            if error {
-                close(server, client);
-                return true;
-            }
+        #if OS == .LINUX {
+            if !server.tls {
+                file_fd := POSIX.fileno(client.send_file.handle);
 
-            remaining := content;
-            while remaining.count > 0 {
-                bytes_sent := send(server, client, remaining.data, remaining.count);
-                if bytes_sent == -1 {
-                    return handle_send_failure(server, client, bytes_sent);
+                while client.send_file_offset < client.send_file_end {
+                    remaining := client.send_file_end - client.send_file_offset;
+                    offset: s64 = client.send_file_offset;
+                    bytes_sent := linux_sendfile(client.client_id, file_fd, *offset, xx remaining);
+
+                    if bytes_sent == -1 {
+                        return handle_send_failure(server, client, -1);
+                    }
+
+                    if bytes_sent == 0 break;
+
+                    client.send_file_offset = offset;
+
+                    if bytes_sent < remaining {
+                        set_timeout(client, 30);
+                        notify_when_sendable(server, client);
+                        return false;
+                    }
                 }
 
-                client.send_file_offset += bytes_sent;
-                remaining.data  += bytes_sent;
-                remaining.count -= bytes_sent;
+                file_close(*client.send_file);
+
+                client.send_file_offset = 0;
+                client.send_file_end    = 0;
+            }
+        } else #if OS == .MACOS {
+            if !server.tls {
+                file_fd := POSIX.fileno(client.send_file.handle);
+
+                while client.send_file_offset < client.send_file_end {
+                    remaining := client.send_file_end - client.send_file_offset;
+                    bytes_sent: s64 = remaining;
+                    result := Socket.sendfile(file_fd, client.client_id, client.send_file_offset, *bytes_sent, null, 0);
+
+                    client.send_file_offset += bytes_sent;
+
+                    if result == -1 {
+                        return handle_send_failure(server, client, -1);
+                    }
+
+                    if bytes_sent == 0 break;
+                }
+
+                file_close(*client.send_file);
+
+                client.send_file_offset = 0;
+                client.send_file_end    = 0;
             }
         }
 
-        file_close(*client.send_file);
+        if client.send_file.handle {
+            buffer: [32768] u8;
 
-        client.send_file_offset = 0;
-        client.send_file_size   = 0;
+            while client.send_file_offset < client.send_file_end {
+                to_read := min(client.send_file_end - client.send_file_offset, buffer.count);
+
+                success := file_set_position(client.send_file, client.send_file_offset);
+                if !success {
+                    close(server, client);
+                    return true;
+                }
+
+                bytes_read: int;
+                success, bytes_read = file_read(client.send_file, buffer.data, to_read);
+                if !success || bytes_read == 0 {
+                    close(server, client);
+                    return true;
+                }
+
+                remaining_data  := buffer.data;
+                remaining_count := bytes_read;
+                while remaining_count > 0 {
+                    bytes_sent := send(server, client, remaining_data, remaining_count);
+                    if bytes_sent == -1 {
+                        return handle_send_failure(server, client, bytes_sent);
+                    }
+
+                    client.send_file_offset += bytes_sent;
+                    remaining_data          += bytes_sent;
+                    remaining_count         -= bytes_sent;
+                }
+            }
+
+            file_close(*client.send_file);
+
+            client.send_file_offset = 0;
+            client.send_file_end    = 0;
+        }
     }
 
     if client.close_after_send {
@@ -1300,6 +1372,9 @@ serve_entire_static_file :: (request: Http_Request, path: string) -> Http_Respon
         return internal_server_error(request);
     }
 
+    response.file_offset = 0;
+    response.file_size   = length;
+
     set_header(*response.headers, "Content-Length", tprint("%", length));
 
     return response;
@@ -1322,19 +1397,24 @@ serve_static_file_range :: (request: Http_Request, path: string) -> Http_Respons
     file, success := file_open(path);
     if !success return internal_server_error(request);
 
-    defer file_close(*file);
-
     length:, success = file_length(file);
-    if !success return internal_server_error(request);
+    if !success {
+        file_close(*file);
+        return internal_server_error(request);
+    }
 
     if start == -1 {
-        if end <= 0 return bad_request(request);
+        if end <= 0 {
+            file_close(*file);
+            return bad_request(request);
+        }
         start = length - end;
         if start < 0 start = 0;
         end = length - 1;
     }
 
     if start >= length {
+        file_close(*file);
         response.status = .RANGE_NOT_SATISFIABLE;
         set_header(*response.headers, "Content-Range", tprint("bytes */%", length));
         return response;
@@ -1345,20 +1425,22 @@ serve_static_file_range :: (request: Http_Request, path: string) -> Http_Respons
     }
 
     if end >= length end = length - 1;
-    if start > end return bad_request(request);
+    if start > end {
+        file_close(*file);
+        return bad_request(request);
+    }
 
     if end - start + 1 > kilobytes(1024) {
         end = start + kilobytes(1024) - 1;
     }
 
-    error=, content := read_part_of_file(file, start, end - start + 1);
-    if error return internal_server_error(request);
+    count := end - start + 1;
 
-    end = start + content.count - 1;
+    response.file        = file;
+    response.file_offset = start;
+    response.file_size   = count;
 
-    response.body = content;
-
-    set_header(*response.headers, "Content-Length", tprint("%", content.count));
+    set_header(*response.headers, "Content-Length", tprint("%", count));
     set_header(*response.headers, "Content-Range", tprint("bytes %-%/%", start, end, length));
 
     return response;
@@ -1410,23 +1492,6 @@ get_content_type_from_extension :: (path: string) -> string {
     return "application/octet-stream";
 }
 
-read_part_of_file :: (f: File, start: int, count: int) -> error: bool, string {
-    data := cast(*u8) alloc(count);
-    if data == null return true, "";
-
-    success := file_set_position(f, start);
-    if !success return true, "";
-
-    success=, total_read := file_read(f, data, count);
-    if !success return true, "";
-
-    content: string;
-    content.data = data;
-    content.count = total_read;
-
-    return false, content;
-}
-
 Parse_Status :: enum {
     ERROR;
     INCOMPLETE;
@@ -1458,7 +1523,7 @@ Http_Client :: struct {
 
     send_file:        File;
     send_file_offset: int;
-    send_file_size:   int;
+    send_file_end:    int;
 
     ws_partial_opcode:  u8;
     ws_partial_payload: [..] u8;
