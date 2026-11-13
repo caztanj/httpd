@@ -26,7 +26,7 @@ set_header :: (headers: *[..] Http_Header, key: string, value: string) {
         if (it < 0x20 && it != #char "\t") || it == 0x7F return;
     }
 
-    push_allocator(context.default_allocator);
+    push_allocator(temp);
 
     for * headers.* {
         if equal_nocase(it.key, key) {
@@ -307,29 +307,37 @@ send_response :: (server: *Http_Server, response: Http_Response) {
     client := find_client(server, response.client_id);
     if client == null return;
 
-    b: String_Builder;
-    b.allocator = temp;
+    status_string := http_response_status_to_string(response.status);
 
-    print_to_builder(*b, "HTTP/1.1 %\r\n", http_response_status_to_string(response.status));
+    total_size := "HTTP/1.1 ".count + status_string.count + "\r\n".count;
 
     for response.headers {
-        print_to_builder(*b, "%: %\r\n", it.key, it.value);
+        total_size += it.key.count + ": ".count + it.value.count + "\r\n".count;
     }
 
-    append(*b, "\r\n");
-    append(*b, response.body);
+    total_size += "\r\n".count + response.body.count;
 
-    buffer := get_base_buffer(*b);
-    while buffer {
-        if buffer.count > 0 {
-            slice: [] u8;
-            slice.data  = get_buffer_data(buffer);
-            slice.count = buffer.count;
-            array_add(*client.send_buffer, ..slice);
-        }
+    array_reserve(*client.send_buffer, client.send_buffer.count + total_size);
 
-        buffer = buffer.next;
+    append_to_send_buffer :: (send_buffer: *[..] u8, s: string) {
+        if s.count == 0 return;
+        memcpy(send_buffer.data + send_buffer.count, s.data, s.count);
+        send_buffer.count += s.count;
     }
+
+    append_to_send_buffer(*client.send_buffer, "HTTP/1.1 ");
+    append_to_send_buffer(*client.send_buffer, status_string);
+    append_to_send_buffer(*client.send_buffer, "\r\n");
+
+    for response.headers {
+        append_to_send_buffer(*client.send_buffer, it.key);
+        append_to_send_buffer(*client.send_buffer, ": ");
+        append_to_send_buffer(*client.send_buffer, it.value);
+        append_to_send_buffer(*client.send_buffer, "\r\n");
+    }
+
+    append_to_send_buffer(*client.send_buffer, "\r\n");
+    append_to_send_buffer(*client.send_buffer, response.body);
 
     if response.file.handle {
         if client.send_file.handle file_close(*client.send_file);
@@ -812,7 +820,7 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
     client.t     = client.read_buffer.data;
     client.max_t = client.read_buffer.data + client.read_buffer.count;
 
-    while true {
+    while client.t < client.max_t {
         t := client.t;
 
         status, request := parse_request(client);
@@ -821,7 +829,9 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
             return;
         } else if status == .INCOMPLETE {
             count := client.max_t - t;
-            memcpy(client.read_buffer.data, t, count);
+            if t != client.read_buffer.data {
+                memcpy(client.read_buffer.data, t, count);
+            }
             client.read_buffer.count = count;
 
             return;
@@ -833,6 +843,8 @@ parse_requests :: (server: *Http_Server, client_id: Socket.Socket) {
 
         array_add(*server.events, .{ type = .Http_Request, http_request = request });
     }
+
+    client.read_buffer.count = 0;
 }
 
 parse_request :: (using client: *Http_Client) -> Parse_Status, Http_Request {
@@ -873,12 +885,21 @@ parse_request :: (using client: *Http_Client) -> Parse_Status, Http_Request {
     if content_length != -1 {
         if t + content_length > max_t return .INCOMPLETE, .{};
 
-        request.body.data = t;
+        request.body.data  = t;
         request.body.count = content_length;
 
-        request.body = copy_temporary_string(request.body);
-
         t += content_length;
+    }
+
+    request.uri = copy_temporary_string(request.uri);
+
+    for * request.headers {
+        it.key   = copy_temporary_string(it.key);
+        it.value = copy_temporary_string(it.value);
+    }
+
+    if request.body.count > 0 {
+        request.body = copy_temporary_string(request.body);
     }
 
     return .SUCCESS, request;
@@ -957,8 +978,6 @@ parse_request_line :: (using client: *Http_Client, request: *Http_Request) -> Pa
     t += 1;
     if t >= max_t return .INCOMPLETE;
 
-    request.uri = copy_temporary_string(request.uri);
-
     return .SUCCESS;
 }
 
@@ -1002,9 +1021,6 @@ parse_header :: (using client: *Http_Client) -> Parse_Status, Http_Header {
 
     t += 1;
     if t >= max_t return .INCOMPLETE, .{};
-
-    header.key   = copy_temporary_string(header.key);
-    header.value = copy_temporary_string(header.value);
 
     return .SUCCESS, header;
 }
