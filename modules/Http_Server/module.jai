@@ -1167,13 +1167,19 @@ create_ssl_context :: () -> *LibreSSL.SSL_CTX {
 }
 
 configure_ssl_context :: (ctx: *LibreSSL.SSL_CTX, certificate_file: string, private_key_file: string) -> error: bool {
-    result := LibreSSL.SSL_CTX_use_certificate_file(ctx, temp_c_string(certificate_file), LibreSSL.SSL_FILETYPE_PEM);
+    result := LibreSSL.SSL_CTX_use_certificate_chain_file(ctx, temp_c_string(certificate_file));
     if result <= 0 {
         print_ssl_errors();
         return true;
     }
 
     result = LibreSSL.SSL_CTX_use_PrivateKey_file(ctx, temp_c_string(private_key_file), LibreSSL.SSL_FILETYPE_PEM);
+    if result <= 0 {
+        print_ssl_errors();
+        return true;
+    }
+
+    result = LibreSSL.SSL_CTX_check_private_key(ctx);
     if result <= 0 {
         print_ssl_errors();
         return true;

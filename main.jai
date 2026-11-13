@@ -10,18 +10,34 @@ main :: () {
         exit(.NO_DIRECTORY_TO_SERVE);
     }
 
+    if is_set.certificate_file && is_set.private_key_file {
+        arguments.tls = true;
+    }
+
+    if arguments.tls || is_set.certificate_file || is_set.private_key_file {
+        if !is_set.certificate_file || !is_set.private_key_file {
+            log_error("Both certificate_file and private_key_file must be specified for TLS.");
+            exit(.MISSING_TLS_ARGUMENTS);
+        }
+    }
+
+    if !is_set.port {
+        arguments.port = ifx arguments.tls then cast(u16) 443 else cast(u16) 80;
+    }
+
     arguments.directory = copy_string(get_absolute_path(arguments.directory));
 
-    error := init(*server, arguments.port, arguments.address);
+    error := init(*server, arguments.port, arguments.address, arguments.tls, arguments.certificate_file, arguments.private_key_file);
     if error {
         log_error("Unable to initialize the HTTP server.");
         exit(.HTTP_SERVER_INITIALIZATION_FAILED);
     }
 
+    scheme := ifx arguments.tls then "https" else "http";
     if contains(arguments.address, ":") {
-        log("Listening on http://[%]:%", arguments.address, arguments.port);
+        log("Listening on %://[%]:%", scheme, arguments.address, arguments.port);
     } else {
-        log("Listening on http://%:%", arguments.address, arguments.port);
+        log("Listening on %://%:%", scheme, arguments.address, arguments.port);
     }
 
     while !quit {
@@ -97,17 +113,20 @@ Arguments :: struct {
     directory: string;
 
     address: string = "127.0.0.1";
-    port:    u16    = 3000; // @Todo: Maybe the default port should be 80 for HTTP and 443 for HTTPS?
+    port:    u16    = 80;
+
+    tls:              bool;
+    certificate_file: string;
+    private_key_file: string;
 
     debug: bool;
-
-    // @Todo: Add TLS.
 }
 
 Exit_Code :: enum {
     SUCCESS;
     FAILED_TO_PARSE_ARGUMENTS;
     NO_DIRECTORY_TO_SERVE;
+    MISSING_TLS_ARGUMENTS;
     HTTP_SERVER_INITIALIZATION_FAILED;
     HTTP_SERVER_POLL_FAILED;
 }
