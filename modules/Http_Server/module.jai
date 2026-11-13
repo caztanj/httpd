@@ -32,11 +32,14 @@ set_header :: (headers: *[..] Http_Header, key: string, value: string) {
 static_file :: (request: Http_Request, directory: string) -> Http_Response {
     push_allocator(temp);
 
-    path := join(directory, "/", percent_decode(request.uri));
+    decoded_uri := percent_decode(request.uri);
+    if contains(decoded_uri, "\0") return bad_request(request);
 
-    // @Todo: I think we need to resolve the path and then check if it is inside the specified directory.
-    if contains(path, "..") || contains(path, "\0") return bad_request(request);
-    if !file_exists(path)   return not_found  (request);
+    absolute_directory, success := get_absolute_path(directory);
+    if !success return internal_server_error(request);
+
+    path := join(absolute_directory, "/", decoded_uri);
+    if !file_exists(path) return not_found(request);
 
     if is_directory(path) {
         index_path := tprint("%/index.html", path);
@@ -44,10 +47,23 @@ static_file :: (request: Http_Request, directory: string) -> Http_Response {
         else                       return not_found(request);
     }
 
-    error, range := get_header(request.headers, "Range");
-    if !error return serve_static_file_range(request, path);
+    absolute_path:, success = get_absolute_path(path);
+    if !success return not_found(request);
 
-    return serve_entire_static_file(request, path);
+    is_inside :: (path: string, directory: string) -> bool {
+        if !starts_with(path, directory)                           return false;
+        if path.count == directory.count                           return true;
+        if ends_with(directory, "/") || ends_with(directory, "\\") return true;
+
+        return path[directory.count] == "/" || path[directory.count] == "\\";
+    }
+
+    if !is_inside(absolute_path, absolute_directory) return not_found(request);
+
+    error, range := get_header(request.headers, "Range");
+    if !error return serve_static_file_range(request, absolute_path);
+
+    return serve_entire_static_file(request, absolute_path);
 }
 
 text :: (request: Http_Request, text: string, content_type := "text/plain") -> Http_Response {
