@@ -4,8 +4,9 @@ An HTTP server written in Jai. The aim is to make a very fast and very secure HT
 
 ## Modules
 
-Two modules have been developed:
+These modules have been developed:
 
+- Html_Template - HTML templating engine
 - Http_Server - The HTTP server module
 - LibreSSL - Bindings to LibreSSL
 
@@ -47,4 +48,3 @@ On macOS we use `kqueue`, on Linux we use `epoll` and on Windows we use `Windows
 ## TODO
 
 - Add Gzip and/or Brotli support.
-- Add an HTML templating engine module.
