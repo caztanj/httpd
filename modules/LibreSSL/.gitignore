@@ -4,8 +4,6 @@ windows_*
 linux_*
 macos_*
 
-.build
-
 LibreSSL-*/build
 
 *.exe

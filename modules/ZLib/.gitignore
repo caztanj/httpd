@@ -1,0 +1,12 @@
+.build
+
+windows_*
+linux_*
+macos_*
+
+zlib-*/build
+
+*.exe
+*.pdb
+
+examples/example
