@@ -18,6 +18,22 @@ These modules can be used in other projects but the Http_Server module depends o
 - SSE
 - TLS
 
+## Compiling
+
+```
+cd modules/LibreSSL
+jai build.jai
+jai generate.jai
+cd ../..
+jai first.jai - release
+```
+
+`cmake` and `ninja` must be installed for compiling LibreSSL.
+
+## Cross Compiling to Linux ARM64
+
+You have to compile LibreSSL manually by doing the same thing as `build.jai` does and then run `jai generate.jai - arm64`. Compile httpd with `jai first.jai - release arm64`. `aarch64-linux-gnu-gcc` must be installed. You also need [raspberry-jai](https://github.com/TheGag96/raspberry-jai).
+
 ## Performance
 
 On my computer this HTTP server is a bit faster than nginx but more extensive testing is needed.

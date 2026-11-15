@@ -112,7 +112,9 @@ run_linux_cross_link_command :: (w: Workspace, m: *Message_Phase) -> string {
 
         path, basename, extension, filename := path_decomp(library);
 
-        if extension == "dll" {
+        if basename == "libc" && extension == "so" {
+            library = "-lc";
+        } else if extension == "dll" {
             if starts_with(basename, "lib") {
                 advance(*basename, 3);
                 library = tprint("-l%", basename);

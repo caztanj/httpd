@@ -1,7 +1,13 @@
 main :: () {
     set_build_options_dc(.{ do_output = false });
 
-    platform_identifier   := get_platform_identifier();
+    arguments := get_build_options().compile_time_command_line;
+
+    target_arm64 := array_find(arguments, "arm64");
+
+    cpu := ifx target_arm64 CPU.ARM64 else CPU;
+
+    platform_identifier   := get_platform_identifier(cpu);
     absolute_include_path := get_absolute_path(sprint("%/include", platform_identifier));
     output_filename       := join(path_strip_filename(#filepath), platform_identifier, ".jai");
 
@@ -49,7 +55,7 @@ visitor :: (decl: *Declaration, parent_decl: *Declaration) -> Declaration_Visit_
     return .RECURSE;
 }
 
-get_platform_identifier :: () -> string {
+get_platform_identifier :: (cpu := CPU) -> string {
     operating_system: string;
     architecture:     string;
 
@@ -60,7 +66,7 @@ get_platform_identifier :: () -> string {
         case;          assert(false, "Unsupported operating system.");
     }
 
-    if CPU == {
+    if cpu == {
         case .X64;   architecture = "x64";
         case .ARM64; architecture = "arm64";
         case;        assert(false, "Unsupported architecture.");
