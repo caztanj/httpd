@@ -33,13 +33,6 @@ build :: () {
         options.use_custom_link_command = true;
     }
 
-    import_path: [..] string;
-
-    array_add(*import_path, "../../modules");
-    array_add(*import_path, ..options.import_path);
-
-    options.import_path = import_path;
-
     options.output_path = ifx release "build_release" else "build_debug";
 
     if release set_optimization(*options, .OPTIMIZED);
