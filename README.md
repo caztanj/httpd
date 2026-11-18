@@ -44,7 +44,3 @@ On my computer this HTTP server is a bit faster than nginx but more extensive te
 The HTTP server supports Linux, macOS and Windows but the performance is not very good on Windows. The primary aim is to have it running an working on Windows but not have it be super fast.
 
 On macOS we use `kqueue`, on Linux we use `epoll` and on Windows we use `Windows Sockets 2`.
-
-## TODO
-
-- Add Gzip and/or Brotli support.

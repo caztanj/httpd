@@ -7,6 +7,10 @@
 //        macOS:   (RLIMIT_NOFILE - 32) / 2
 //        Linux:   (RLIMIT_NOFILE - 32) / 2
 
+// @Todo: Add gzip support.
+//        If a .gz-version of a static file exists and the client accepts gzip encoding, use it.
+//        If a client support gzip encoding, decide if we should compress the data in memory when sending.
+
 get_header :: (headers: [] Http_Header, key: string) -> error: bool, string {
     for headers {
         if equal_nocase(it.key, key) return false, it.value;
@@ -40,6 +44,7 @@ set_header :: (headers: *[..] Http_Header, key: string, value: string) {
     array_add(headers, header);
 }
 
+// @Todo: This procedure is messy. Clean it up.
 static_file :: (request: Http_Request, directory: string, directory_is_absolute := false) -> Http_Response {
     push_allocator(temp);
 
