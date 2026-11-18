@@ -27,7 +27,7 @@ set_header :: (headers: *[..] Http_Header, key: string, value: string) {
     }
 
     for value {
-        if (it < 0x20 && it != #char "\t") || it == 0x7F return;
+        if (it < 0x20 && it != "\t") || it == 0x7F return;
     }
 
     push_allocator(temp);
@@ -248,7 +248,7 @@ print_http_request :: (request: *Http_Request) {
 
     if request.body.count != 0 {
         for request.body {
-            if (it < 0x20 && it != #char "\n" && it != #char "\t") || it == 0x7F {
+            if (it < 0x20 && it != "\n" && it != "\t") || it == 0x7F {
                 append(*b, ".");
             } else {
                 append(*b, it);
@@ -1205,7 +1205,7 @@ parse_header :: (using client: *Http_Client) -> Parse_Status, Http_Header {
             break;
         }
 
-        if (t.* < 0x20 && t.* != #char "\t") || t.* == 0x7F return .ERROR, .{};
+        if (t.* < 0x20 && t.* != "\t") || t.* == 0x7F return .ERROR, .{};
 
         t += 1;
     }
